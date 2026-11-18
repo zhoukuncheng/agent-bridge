@@ -6,6 +6,14 @@ import type { NewScheduleRow, ScheduleRow, Store } from "../store.ts";
 import { truncate } from "../agents/types.ts";
 import { runShell } from "./exec.ts";
 
+export interface SchedulerOptions {
+  runTimeoutMinutes: number;
+  teamId?: string;
+  /** What to do about a firing missed while the bridge was down. */
+  catchUp?: "run" | "notify" | "off";
+  catchUpHours?: number;
+}
+
 export type NewSchedule = Omit<NewScheduleRow, "created_by"> & { createdBy: string };
 
 export const scheduleLabel = (row: ScheduleRow) => row.name || truncate(row.prompt.replace(/\s+/g, " "), 60);
@@ -27,9 +35,9 @@ export class Scheduler {
   private readonly runner: Runner;
   private readonly manager: SessionManager;
   private readonly api: SlackApi;
-  private readonly options: { runTimeoutMinutes: number; teamId?: string };
+  private readonly options: SchedulerOptions;
 
-  constructor(store: Store, runner: Runner, manager: SessionManager, api: SlackApi, options: { runTimeoutMinutes: number; teamId?: string }) {
+  constructor(store: Store, runner: Runner, manager: SessionManager, api: SlackApi, options: SchedulerOptions) {
     this.store = store;
     this.runner = runner;
     this.manager = manager;
@@ -37,8 +45,47 @@ export class Scheduler {
     this.options = options;
   }
 
-  start(): void {
-    for (const row of this.store.listSchedules()) if (row.enabled) this.arm(row);
+  /** Arms enabled schedules and returns the catch-up of missed firings (already started). */
+  start(now = new Date()): Promise<void> {
+    const missed: { row: ScheduleRow; at: Date }[] = [];
+    const policy = this.options.catchUp ?? "off";
+    const windowMs = (this.options.catchUpHours ?? 12) * 3_600_000;
+    for (const row of this.store.listSchedules()) {
+      if (!row.enabled) continue;
+      this.arm(row);
+      if (policy === "off") continue;
+      const probe = new Cron(row.cron, { paused: true, ...(row.tz ? { timezone: row.tz } : {}) });
+      const previous = probe.previousRuns(1, now)[0];
+      probe.stop();
+      const baseline = row.last_run_at ?? row.created_at;
+      if (previous && previous.getTime() > baseline && now.getTime() - previous.getTime() <= windowMs) missed.push({ row, at: previous });
+    }
+    return this.catchUp(missed, policy);
+  }
+
+  /** Runs missed firings one at a time, telling each schedule's owner first. */
+  private async catchUp(missed: { row: ScheduleRow; at: Date }[], policy: "run" | "notify" | "off"): Promise<void> {
+    for (const { row, at } of missed) {
+      const when = at.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+      const action = policy === "run" ? "running it now" : `run it with \`!cron run ${row.id}\``;
+      await this.notifyOwner(row, `⏰ schedule #${row.id} *${scheduleLabel(row)}* missed its ${when} run while the bridge was down; ${action}.`);
+      if (policy === "run") await this.fire(row.id).catch((err) => this.reportFailure(row.id, err));
+    }
+  }
+
+  private async notifyOwner(row: ScheduleRow, text: string): Promise<void> {
+    try {
+      const dm = await this.api.openDm(row.created_by);
+      await this.api.postMessage({ channel: dm, text });
+    } catch (err) {
+      console.error(`schedule ${row.id}: could not notify the owner`, err);
+    }
+  }
+
+  private async reportFailure(id: number, err: unknown): Promise<void> {
+    console.error(`schedule ${id} failed`, err);
+    const row = this.store.getSchedule(id);
+    if (row) await this.notifyOwner(row, `❌ schedule #${id} *${scheduleLabel(row)}* failed to run: ${(err as Error)?.message ?? String(err)}`);
   }
 
   stop(): void {
@@ -85,7 +132,7 @@ export class Scheduler {
   private arm(row: ScheduleRow): void {
     this.disarm(row.id);
     const job = new Cron(row.cron, { ...(row.tz ? { timezone: row.tz } : {}) }, () => {
-      void this.fire(row.id).catch((err) => console.error(`schedule ${row.id} failed`, err));
+      void this.fire(row.id).catch((err) => this.reportFailure(row.id, err));
     });
     this.jobs.set(row.id, job);
   }

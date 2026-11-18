@@ -1,8 +1,19 @@
+import { createWriteStream } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { WebClient } from "@slack/web-api";
 
 export type StreamChunk =
   | { type: "markdown_text"; text: string }
   | { type: "task_update"; id: string; title: string; status: "pending" | "in_progress" | "complete" | "error"; details?: string; output?: string };
+
+export interface SlackFile {
+  id: string;
+  name: string;
+  mimetype?: string;
+  size?: number;
+  url_private_download?: string;
+}
 
 export interface ReplyMessage {
   ts: string;
@@ -10,7 +21,30 @@ export interface ReplyMessage {
   user?: string;
   bot_id?: string;
   blocks?: unknown[];
+  thread_ts?: string;
+  subtype?: string;
+  files?: SlackFile[];
 }
+
+/** Accepts only https URLs on slack.com hosts. */
+export function slackFileUrl(raw: string): string {
+  const url = new URL(raw);
+  if (url.protocol !== "https:" || !(url.hostname === "slack.com" || url.hostname.endsWith(".slack.com"))) {
+    throw new Error(`refusing to send the bot token to ${url.protocol}//${url.hostname}`);
+  }
+  return url.toString();
+}
+
+const toReply = (m: Record<string, any>): ReplyMessage => ({
+  ts: m.ts,
+  text: m.text ?? "",
+  user: m.user,
+  bot_id: m.bot_id,
+  blocks: m.blocks,
+  thread_ts: m.thread_ts,
+  subtype: m.subtype,
+  files: m.files,
+});
 
 /** The slice of the Slack Web API the bridge uses; tests substitute a recorder. */
 export interface SlackApi {
@@ -23,6 +57,10 @@ export interface SlackApi {
   replies(channel: string, ts: string): Promise<ReplyMessage[]>;
   /** Display name for a user id; falls back to the id. */
   userName(userId: string): Promise<string>;
+  /** Top-level messages in a channel newer than `oldestTs`, oldest first. */
+  history(channel: string, oldestTs: string): Promise<ReplyMessage[]>;
+  /** Downloads a private file with the bot token; returns its size. Throws above maxBytes. */
+  downloadFile(file: SlackFile, dest: string, maxBytes: number): Promise<number>;
 }
 
 export class WebSlackApi implements SlackApi {
@@ -66,7 +104,7 @@ export class WebSlackApi implements SlackApi {
     let cursor: string | undefined;
     do {
       const page = await this.client.conversations.replies({ channel, ts, cursor, limit: 200 });
-      for (const m of page.messages ?? []) messages.push({ ts: m.ts!, text: m.text ?? "", user: m.user, bot_id: m.bot_id, blocks: m.blocks });
+      for (const m of page.messages ?? []) messages.push(toReply(m));
       cursor = page.response_metadata?.next_cursor || undefined;
     } while (cursor);
     return messages;
@@ -84,5 +122,40 @@ export class WebSlackApi implements SlackApi {
     }
     this.names.set(userId, name);
     return name;
+  }
+
+  async history(channel: string, oldestTs: string): Promise<ReplyMessage[]> {
+    const messages: ReplyMessage[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.client.conversations.history({ channel, oldest: oldestTs, cursor, limit: 200 });
+      for (const m of page.messages ?? []) messages.push(toReply(m));
+      cursor = page.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+    return messages.sort((a, b) => Number(a.ts) - Number(b.ts));
+  }
+
+  async downloadFile(file: SlackFile, dest: string, maxBytes: number): Promise<number> {
+    if (!file.url_private_download) throw new Error(`${file.name}: no download URL (external or deleted file)`);
+    if (file.size !== undefined && file.size > maxBytes) throw new Error(`${file.name} is ${Math.round(file.size / 1e6)} MB, over the ${Math.round(maxBytes / 1e6)} MB limit`);
+    // The bot token goes only to Slack's own HTTPS hosts, also across redirects.
+    let url = slackFileUrl(file.url_private_download);
+    let res: Response | undefined;
+    for (let hop = 0; hop < 4; hop++) {
+      res = await fetch(url, { headers: { Authorization: `Bearer ${this.client.token}` }, redirect: "manual" });
+      if (res.status < 300 || res.status >= 400) break;
+      const next = res.headers.get("location");
+      if (!next) break;
+      url = slackFileUrl(new URL(next, url).toString());
+    }
+    if (!res || !res.ok || !res.body) throw new Error(`${file.name}: download failed (${res?.status})`);
+    let size = 0;
+    const body = Readable.fromWeb(res.body as never);
+    body.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) body.destroy(new Error(`${file.name} is over the ${Math.round(maxBytes / 1e6)} MB limit`));
+    });
+    await pipeline(body, createWriteStream(dest, { mode: 0o600 }));
+    return size;
   }
 }

@@ -12,7 +12,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { WebClient } from "@slack/web-api";
-import { createBridge } from "../src/bridge.ts";
+import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { createBridge, createDrivers } from "../src/bridge.ts";
 import { defaultConfig, type Config } from "../src/config.ts";
 import { WebSlackApi, type ReplyMessage } from "../src/slack/api.ts";
 import { Store } from "../src/store.ts";
@@ -57,7 +59,10 @@ const config: Config = {
   runTimeoutMinutes: 5,
   dbPath: join(workDir, "e2e.db"),
 };
-const bridge = createBridge({ config, api, botUserId: BOT, teamId: auth.team_id, store: new Store(config.dbPath) });
+config.filesDir = join(workDir, "files");
+// Same per-agent memory cap the deployed service uses.
+const drivers = createDrivers(config, { memoryCap: true, wrapperDir: join(workDir, "bin") });
+const bridge = createBridge({ config, api, botUserId: BOT, teamId: auth.team_id, store: new Store(config.dbPath), drivers });
 bridge.manager.start();
 bridge.scheduler.start();
 const dm = await api.openDm(OWNER);
@@ -91,6 +96,37 @@ async function waitForReply(channel: string, threadTs: string, afterTs: string, 
 const finished = (m: ReplyMessage) => /(completed|aborted|failed) · \d+(s|m)/.test(m.text);
 const completed = (m: ReplyMessage) => /completed · \d+(s|m)/.test(m.text);
 const hasTaskCard = (m: ReplyMessage) => (m.blocks ?? []).some((b: any) => b.type === "task_card");
+const taskCards = (m: ReplyMessage) => (m.blocks ?? []).filter((b: any) => b.type === "task_card").length;
+
+/** Memory caps of running systemd scopes whose processes match `pattern`. */
+function cappedScopes(pattern: RegExp): string[] {
+  const units = execFileSync("systemctl", ["--user", "list-units", "--type=scope", "--state=running", "--no-legend", "--plain"], { encoding: "utf8" })
+    .split("\n")
+    .map((l) => l.split(/\s+/)[0])
+    .filter((u): u is string => Boolean(u?.startsWith("run-")));
+  const found: string[] = [];
+  for (const unit of units) {
+    const props = execFileSync("systemctl", ["--user", "show", unit, "-p", "MemoryMax", "-p", "ControlGroup"], { encoding: "utf8" });
+    const cg = props.match(/ControlGroup=(.*)/)?.[1];
+    if (!cg) continue;
+    let procs: string[] = [];
+    try {
+      procs = readFileSync(`/sys/fs/cgroup${cg}/cgroup.procs`, "utf8").split("\n").filter(Boolean);
+    } catch {
+      continue;
+    }
+    for (const pid of procs) {
+      let cmd = "";
+      try {
+        cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
+      } catch {
+        continue;
+      }
+      if (pattern.test(cmd)) found.push(`${unit} ${props.match(/MemoryMax=(.*)/)?.[1]}`);
+    }
+  }
+  return found;
+}
 
 const results: { name: string; ok: boolean; detail: string; seconds: number }[] = [];
 async function scenario(name: string, fn: () => Promise<string>): Promise<void> {
@@ -116,12 +152,14 @@ const links: string[] = [];
 
 // 1. Channel chat with Claude Code: tool call + streamed answer, memory across turns, resume after release, !stop.
 await scenario("claude-channel-chat", async () => {
-  const root = await userSays(CHANNEL, "Remember the codeword PINEAPPLE-42. Use your shell tool to run `echo e2e-tool-ok`, then reply with exactly: READY");
+  const root = await userSays(CHANNEL, "Remember the codeword PINEAPPLE-42. Use your shell tool twice, as two separate calls: `echo e2e-tool-a` and then `echo e2e-tool-b`. Then reply with exactly: READY");
   links.push(`claude chat: ${await permalink(CHANNEL, root)}`);
   const first = await waitForReply(CHANNEL, root, root, finished);
   expect(/READY/.test(first.text), `first answer lacks READY: ${first.text.slice(0, 200)}`);
-  expect(hasTaskCard(first), "first answer has no tool task card");
+  expect(taskCards(first) === 1, `concise display should fold both tool calls into one card, got ${taskCards(first)}`);
   expect(completed(first), "first turn did not complete");
+  const scopes = cappedScopes(/claude.*(stream-json|--output-format)/);
+  expect(scopes.some((s) => s.endsWith(" 8589934592")), `claude session is not in an 8G scope: ${JSON.stringify(scopes)}`);
 
   const q = await userSays(CHANNEL, "What was the codeword? Reply with only the codeword.", root);
   const second = await waitForReply(CHANNEL, root, q, finished);
@@ -151,6 +189,8 @@ await scenario("omp-dm-chat", async () => {
   links.push(`omp DM chat: ${await permalink(dm, root)}`);
   const first = await waitForReply(dm, root, root, finished);
   expect(/\bOK\b/.test(first.text) && completed(first), `unexpected first answer: ${first.text.slice(0, 200)}`);
+  const ompScopes = cappedScopes(/omp acp/);
+  expect(ompScopes.some((s) => s.endsWith(" 8589934592")), `omp session is not in an 8G scope: ${JSON.stringify(ompScopes)}`);
   await bridge.manager.release(dm, root);
   const q = await userSays(dm, "What was the codeword? Reply with only the codeword.", root);
   const second = await waitForReply(dm, root, q, finished);
@@ -265,6 +305,35 @@ await scenario("cron-exec-silent", async () => {
   bridge.scheduler.remove(execId);
   bridge.scheduler.remove(silentId);
   return "exec posted stdout+stderr, silent posted only the answer, its thread resumed";
+});
+
+// 8. Attachments: a file on the message is downloaded and handed to the agent.
+await scenario("attachment", async () => {
+  const local = join(workDir, "e2e-note.txt");
+  writeFileSync(local, `e2e attachment check\nthe magic number is 7341\n`);
+  const upload = (await client.filesUploadV2({ channel_id: CHANNEL, file: local, filename: "e2e-note.txt", initial_comment: `🧪 _e2e ${runTag}: attachment_` })) as any;
+  const fileId: string = upload.files?.[0]?.files?.[0]?.id ?? upload.files?.[0]?.id;
+  expect(Boolean(fileId), `upload returned no file id: ${JSON.stringify(upload).slice(0, 200)}`);
+  let info: any;
+  for (let i = 0; i < 10 && !info?.file?.shares; i++) {
+    info = await client.files.info({ file: fileId });
+    if (!info.file?.shares) await sleep(1500);
+  }
+  const share = info.file.shares.public?.[CHANNEL]?.[0] ?? info.file.shares.private?.[CHANNEL]?.[0];
+  expect(Boolean(share?.ts), "uploaded file has no message in the channel");
+  links.push(`attachment: ${await permalink(CHANNEL, share.ts)}`);
+  await bridge.router.handle({
+    channel: CHANNEL,
+    channelType: "channel",
+    user: OWNER,
+    text: `<@${BOT}> What is the magic number in the attached file? Reply with only the number.`,
+    ts: share.ts,
+    teamId: auth.team_id,
+    files: [{ id: info.file.id, name: info.file.name, mimetype: info.file.mimetype, size: info.file.size, url_private_download: info.file.url_private_download }],
+  });
+  const answer = await waitForReply(CHANNEL, share.ts, share.ts, finished);
+  expect(/7341/.test(answer.text), `answer without the file's content: ${answer.text.slice(0, 200)}`);
+  return "file downloaded, agent read it";
 });
 
 // 7. Mentioned in a thread the bridge did not start: the agent reads the thread first.

@@ -1,20 +1,26 @@
 import type { AgentDriver, AgentSession } from "../agents/types.ts";
 import type { SlackApi } from "../slack/api.ts";
-import type { RenderOptions, ThreadTarget } from "../slack/render.ts";
+import type { DisplayMode, RenderOptions, ThreadTarget } from "../slack/render.ts";
 import type { Store, ThreadKind } from "../store.ts";
-import { SessionBinding } from "./binding.ts";
+import { SessionBinding, type StallOptions } from "./binding.ts";
 
 export interface SessionSpec {
   agent: string;
   cwd: string;
   model?: string;
   kind: ThreadKind;
+  /** Read-only tools and no user configuration; runs on the restricted agent. */
+  restricted?: boolean;
+  /** With restricted: reads limited to `cwd` (guests). */
+  sandboxed?: boolean;
+  startedBy?: string;
 }
 
 export interface ManagerOptions {
   idleMinutes: number;
   maxLiveSessions: number;
   renderOptions?: Partial<RenderOptions>;
+  stall?: StallOptions;
 }
 
 const keyOf = (channel: string, threadTs: string) => `${channel}:${threadTs}`;
@@ -70,14 +76,31 @@ export class SessionManager {
     if (inflight) return { binding: await inflight, created: false, resumed: false };
 
     const stored = this.store.getThread(target.channel, target.threadTs);
-    const effective: SessionSpec = stored ? { agent: stored.agent, cwd: stored.cwd, model: stored.model ?? undefined, kind: stored.kind } : spec;
+    const effective: SessionSpec = stored
+      ? {
+          agent: stored.agent,
+          cwd: stored.cwd,
+          model: stored.model ?? undefined,
+          kind: stored.kind,
+          restricted: stored.restricted > 0,
+          sandboxed: stored.restricted === 2,
+          startedBy: stored.started_by ?? undefined,
+        }
+      : spec;
+    const display = (stored?.display as DisplayMode | null) ?? this.options.renderOptions?.display;
     const driver = this.drivers[effective.agent];
     if (!driver) throw new Error(`unknown agent "${effective.agent}" (configured: ${Object.keys(this.drivers).join(", ")})`);
 
     const open = (async () => {
       await this.makeRoom();
-      const session = await driver.open({ cwd: effective.cwd, model: effective.model, resume: stored?.session_id });
-      const binding = new SessionBinding(session, this.api, target, this.options.renderOptions);
+      const session = await driver.open({
+        cwd: effective.cwd,
+        model: effective.model,
+        resume: stored?.session_id,
+        restricted: effective.restricted,
+        ...(effective.sandboxed ? { readRoot: effective.cwd } : {}),
+      });
+      const binding = new SessionBinding(session, this.api, target, { ...this.options.renderOptions, ...(display ? { display } : {}) }, this.options.stall);
       binding.onExit = () => {
         if (this.live.get(key) === binding) this.live.delete(key);
       };
@@ -90,6 +113,8 @@ export class SessionManager {
         cwd: effective.cwd,
         model: effective.model ?? null,
         kind: effective.kind,
+        restricted: effective.sandboxed ? 2 : effective.restricted ? 1 : 0,
+        started_by: effective.startedBy ?? null,
       });
       return binding;
     })();
@@ -99,6 +124,18 @@ export class SessionManager {
     } finally {
       this.opening.delete(key);
     }
+  }
+
+  /** Per-thread display override; takes effect from the next turn. */
+  setDisplay(channel: string, threadTs: string, display: DisplayMode): void {
+    this.store.setThreadDisplay(channel, threadTs, display);
+    this.live.get(keyOf(channel, threadTs))?.setDisplay(display);
+  }
+
+  /** Lifts a thread's restriction; its live session is closed so the next message resumes it with full tools. */
+  async trust(channel: string, threadTs: string): Promise<void> {
+    this.store.setThreadRestricted(channel, threadTs, false);
+    await this.release(channel, threadTs);
   }
 
   /** Opens a session that no thread owns yet (silent schedules); the caller disposes it. */

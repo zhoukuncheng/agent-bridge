@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import { scopeArgs } from "./memcap.ts";
 import { bridgeSecretEnv, Emitter, truncate, type AgentDriver, type AgentEvent, type AgentSession, type OpenOptions, type SendResult } from "./types.ts";
 
 // Minimal Agent Client Protocol client (https://agentclientprotocol.com) for agents
@@ -10,6 +11,8 @@ export interface AcpAgentConfig {
   args?: string[];
   model?: string;
   env?: Record<string, string>;
+  /** Run the agent inside a systemd scope with this memory cap, e.g. "8G". */
+  memoryMax?: string;
 }
 
 type Json = Record<string, any>;
@@ -158,6 +161,11 @@ class AcpSession implements AgentSession {
         if (text) this.emitter.emit({ type: "text", text });
         break;
       }
+      case "agent_thought_chunk": {
+        const text = contentText(update.content);
+        this.emitter.emit({ type: "reasoning", ...(text ? { text } : {}) });
+        break;
+      }
       case "tool_call": {
         const name = String(update.title || update.name || update.kind || "tool");
         this.toolNames.set(update.toolCallId, name);
@@ -260,7 +268,11 @@ export class AcpDriver implements AgentDriver {
   async open(options: OpenOptions): Promise<AgentSession> {
     const env: NodeJS.ProcessEnv = { ...process.env, ...this.config.env };
     for (const name of bridgeSecretEnv) delete env[name];
-    const child = spawn(this.config.command, this.config.args ?? [], {
+    if (options.restricted) throw new Error(`${this.name} cannot run restricted sessions`);
+    const [command, args] = this.config.memoryMax
+      ? ["systemd-run", scopeArgs(this.config.memoryMax, this.config.command, this.config.args ?? [])]
+      : [this.config.command, this.config.args ?? []];
+    const child = spawn(command, args, {
       cwd: options.cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],

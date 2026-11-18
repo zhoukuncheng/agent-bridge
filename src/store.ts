@@ -12,6 +12,12 @@ export interface ThreadRow {
   cwd: string;
   model: string | null;
   kind: ThreadKind;
+  /** 0: full tools. 1: read-only, no user config (untrusted thread context). 2: as 1, and reads limited to `cwd` (a guest's session). */
+  restricted: number;
+  /** User who started the session. */
+  started_by: string | null;
+  /** Per-thread display override; null follows the config. */
+  display: string | null;
   created_at: number;
   last_active: number;
 }
@@ -103,20 +109,61 @@ export class Store {
       ["origin", "TEXT"],
     ];
     for (const [name, type] of added) if (!columns.has(name)) this.db.exec(`ALTER TABLE schedules ADD COLUMN ${name} ${type}`);
+    const threadColumns = new Set((this.db.prepare("PRAGMA table_info(threads)").all() as { name: string }[]).map((c) => c.name));
+    const threadAdded: [string, string][] = [
+      ["restricted", "INTEGER NOT NULL DEFAULT 0"],
+      ["started_by", "TEXT"],
+      ["display", "TEXT"],
+    ];
+    for (const [name, type] of threadAdded) if (!threadColumns.has(name)) this.db.exec(`ALTER TABLE threads ADD COLUMN ${name} ${type}`);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS handled (channel TEXT NOT NULL, ts TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (channel, ts));
+      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `);
+  }
+
+  /** Claims a Slack message for handling; false when it was already handled (live event, backfill or before a restart). */
+  claimMessage(channel: string, ts: string): boolean {
+    return this.db.prepare("INSERT OR IGNORE INTO handled (channel, ts, at) VALUES (?, ?, ?)").run(channel, ts, Date.now()).changes > 0;
+  }
+
+  pruneHandled(olderThanMs: number): void {
+    this.db.prepare("DELETE FROM handled WHERE at < ?").run(Date.now() - olderThanMs);
+  }
+
+  getMeta(key: string): string | undefined {
+    return (this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+  }
+
+  setMeta(key: string, value: string): void {
+    this.db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key, value);
+  }
+
+  setThreadRestricted(channel: string, threadTs: string, restricted: boolean): void {
+    this.db.prepare("UPDATE threads SET restricted = ? WHERE channel = ? AND thread_ts = ?").run(restricted ? 1 : 0, channel, threadTs);
+  }
+
+  setThreadDisplay(channel: string, threadTs: string, display: string | null): void {
+    this.db.prepare("UPDATE threads SET display = ? WHERE channel = ? AND thread_ts = ?").run(display, channel, threadTs);
+  }
+
+  /** Threads with activity since `sinceMs`, newest first. */
+  recentThreads(sinceMs: number): ThreadRow[] {
+    return this.db.prepare("SELECT * FROM threads WHERE last_active >= ? ORDER BY last_active DESC").all(sinceMs) as unknown as ThreadRow[];
   }
 
   getThread(channel: string, threadTs: string): ThreadRow | undefined {
     return this.db.prepare("SELECT * FROM threads WHERE channel = ? AND thread_ts = ?").get(channel, threadTs) as ThreadRow | undefined;
   }
 
-  upsertThread(row: Omit<ThreadRow, "created_at" | "last_active">): void {
+  upsertThread(row: Omit<ThreadRow, "created_at" | "last_active" | "restricted" | "started_by" | "display"> & { restricted?: number; started_by?: string | null }): void {
     const now = Date.now();
     this.db
-      .prepare(`INSERT INTO threads (channel, thread_ts, agent, session_id, cwd, model, kind, created_at, last_active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      .prepare(`INSERT INTO threads (channel, thread_ts, agent, session_id, cwd, model, kind, restricted, started_by, created_at, last_active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (channel, thread_ts) DO UPDATE SET agent = excluded.agent, session_id = excluded.session_id,
           cwd = excluded.cwd, model = excluded.model, last_active = excluded.last_active`)
-      .run(row.channel, row.thread_ts, row.agent, row.session_id, row.cwd, row.model, row.kind, now, now);
+      .run(row.channel, row.thread_ts, row.agent, row.session_id, row.cwd, row.model, row.kind, row.restricted ?? 0, row.started_by ?? null, now, now);
   }
 
   touchThread(channel: string, threadTs: string): void {

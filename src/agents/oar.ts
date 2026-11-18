@@ -10,7 +10,27 @@ export interface OarAgentConfig {
   env?: Record<string, string>;
   /** Appended to the runtime's own system prompt on every open (where the runtime supports it). */
   appendSystemPrompt?: string;
+  /** Claude only: paths its Read/Edit tools must never touch (`~/...` or absolute). */
+  secretPaths?: string[];
 }
+
+/** Claude permission rules: `~/x` stays, an absolute `/x` is written `//x`. */
+export function secretPathRules(paths: readonly string[]): string[] {
+  return paths.flatMap((p) => {
+    const rule = p.startsWith("/") ? `/${p}` : p;
+    return [`Read(${rule})`, `Edit(${rule})`];
+  });
+}
+
+/** Tools a restricted Claude session may use without asking; everything else is denied (dontAsk). */
+export const restrictedClaudeTools = "Read,Grep,Glob";
+/** Denied outright in restricted sessions: Claude auto-approves "read-only" shell commands such as cat even under dontAsk. */
+export const restrictedClaudeDenied = [
+  "Bash", "BashOutput", "KillShell", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "Task", "Agent",
+  // Tools that spawn work, schedule it or reach outside the session.
+  "Workflow", "CronCreate", "CronDelete", "ScheduleWakeup", "RemoteTrigger", "SendMessage", "PushNotification",
+  "EnterWorktree", "ExitWorktree", "PublishPlugin", "DesignSync", "ShareOnboardingGuide", "Monitor",
+];
 
 /** Pulls the most useful field out of a tool's JSON arguments for a one-line summary. */
 export function summarizeToolInput(raw: string | undefined): string | undefined {
@@ -57,6 +77,8 @@ class OarSession implements AgentSession {
         return { type: "turn_start" };
       case "text_delta":
         return root ? { type: "text", text: event.text } : undefined;
+      case "reasoning":
+        return root ? { type: "reasoning", ...(event.content.kind === "text" ? { text: event.content.text } : {}) } : undefined;
       case "tool_call_started": {
         const name = root ? event.tool : `${event.agentPath.at(-1)} › ${event.tool}`;
         return { type: "tool_start", id: event.callId, name, detail: summarizeToolInput(event.input) };
@@ -130,11 +152,23 @@ export class OarDriver implements AgentDriver {
       throw new Error(`${this.name}: runtime ${this.config.runtime} is not available (${installation?.kind ?? "no installation check"})`);
     }
     const model = options.model ?? this.config.model;
+    const isClaude = this.config.runtime === "claude";
+    if (options.restricted && !isClaude) throw new Error(`${this.name} cannot run restricted sessions`);
+    // Restricted: no user settings, MCP servers or allow rules; only read-only tools, anything else denied without asking.
+    // Claude does not remember launch flags, so this is applied again on every resume.
+    // A read root scopes the read tools to one directory; anything outside it needs a permission dontAsk never grants.
+    const allowed = options.readRoot ? ["Read", "Grep", "Glob"].map((t) => `${t}(/${options.readRoot}/**)`).join(",") : restrictedClaudeTools;
+    const launchArgs = options.restricted ? ["--permission-mode", "dontAsk", "--allowedTools", allowed] : this.config.launchArgs ?? [];
+    const disallowedTools = isClaude
+      ? [...secretPathRules(this.config.secretPaths ?? []), ...(options.restricted ? restrictedClaudeDenied : [])]
+      : [];
     const session = await this.runtime.session(installation, {
       cwd: options.cwd,
       ...(model ? { model } : {}),
       ...(options.resume ? { resume: options.resume } : {}),
-      ...(this.config.launchArgs?.length ? { launchArgs: this.config.launchArgs } : {}),
+      ...(launchArgs.length ? { launchArgs } : {}),
+      ...(disallowedTools.length ? { disallowedTools } : {}),
+      ...(options.restricted ? { userConfiguration: "exclude" as const } : {}),
       ...(this.config.appendSystemPrompt ? { appendSystemPrompt: this.config.appendSystemPrompt } : {}),
       // null removes a variable from what the runtime process inherits.
       env: { ...this.config.env, ...Object.fromEntries(bridgeSecretEnv.map((name) => [name, null])) },

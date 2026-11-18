@@ -27,6 +27,8 @@ export type Command =
   | { kind: "cron_list" }
   | { kind: "cron_rm" | "cron_pause" | "cron_resume" | "cron_run"; id: number }
   | { kind: "stop" | "status" | "release" | "help" }
+  | { kind: "trust"; prompt: string }
+  | { kind: "display"; display: "concise" | "verbose" }
   | { kind: "error"; message: string };
 
 /** Slack escapes &, < and > and wraps links/mentions in <...>; undo what matters for prompts. */
@@ -113,6 +115,11 @@ export function parseCommand(input: string): Command {
     case "status":
     case "release":
       return { kind: name };
+    case "trust":
+      return { kind: "trust", prompt: rest.trim() };
+    case "verbose":
+    case "concise":
+      return { kind: "display", display: name };
     case "new":
     case "chat":
     case "run": {
@@ -177,5 +184,7 @@ export const helpText = [
   '• `!cron add "0 9 * * 1-5" [--name N] [--agent A] [--channel here|dm|#chan] [--mode fresh|continue] [--tz Asia/Shanghai] [--timeout MIN] [--silent] [--exec] <prompt or shell command>`',
   "  `--silent` posts only the final answer; `--exec` runs the text with `sh -c` and posts its output.",
   "• `!cron list` · `!cron run <id>` · `!cron pause <id>` · `!cron resume <id>` · `!cron rm <id>`",
-  "• In a session thread: `!stop` interrupts the turn · `!status` · `!release` frees the process (the next reply resumes).",
+  "• In a session thread: `!stop` interrupts the turn · `!status` · `!release` frees the process (the next reply resumes) · `!verbose` / `!concise` switch how tool calls are shown.",
+  "• 🔒 Sessions started in a thread with other people's messages are read-only. `!trust [prompt]` gives the agent full tools.",
+  "• Attach files to a message and the agent gets them as local paths.",
 ].join("\n");

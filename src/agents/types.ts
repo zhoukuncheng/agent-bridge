@@ -6,6 +6,8 @@ export type TurnOutcome = "completed" | "aborted" | "failed";
 export type AgentEvent =
   | { type: "turn_start" }
   | { type: "text"; text: string }
+  /** Model reasoning; text is absent when the runtime redacts it. */
+  | { type: "reasoning"; text?: string }
   | { type: "tool_start"; id: string; name: string; detail?: string }
   | { type: "tool_input"; id: string; detail: string }
   | { type: "tool_end"; id: string; ok?: boolean; output?: string }
@@ -32,6 +34,10 @@ export interface OpenOptions {
   cwd: string;
   model?: string;
   resume?: string;
+  /** Read-only tools and no user configuration; only drivers that can enforce it accept it. */
+  restricted?: boolean;
+  /** With `restricted`: reads are allowed only under this directory (guests). */
+  readRoot?: string;
 }
 
 export interface AgentDriver {

@@ -23,8 +23,9 @@ The first version supports **Claude Code**, **omp** (Oh My Pi) and **Antigravity
 | You do | The bridge does |
 |---|---|
 | Mention the bot in a channel, or DM it | Starts a session (default agent). It posts a header in the thread, then streams the answer |
-| Mention the bot inside someone else's thread | Starts a session there, and gives the agent the thread's earlier messages first |
+| Mention the bot inside someone else's thread | Starts a session there and gives the agent the thread's earlier messages first. If anyone other than `allowUsers` wrote in the thread, the session starts 🔒 read-only (see Security) |
 | Reply in that thread (no mention needed) | Continues the same session. A reply sent while a turn is running is steered into it (Claude) or queued (omp) |
+| Attach files to the message | Downloads them to `filesDir/<channel>-<thread>/` and gives the agent their local paths |
 | `!chat` / `!new` `--agent omp [--model M] [--cwd DIR] <prompt>` | Starts a session with a specific agent, model or working directory |
 | `!run [--agent A] [--timeout MIN] <prompt>` | Runs a one-shot task, then frees the process. Replying in the thread resumes it |
 | `!cron add "<expr>" [--agent A] [--channel here\|dm\|#chan] [--mode fresh\|continue] [--tz TZ] <prompt>` | Adds a schedule. The expression has 5 fields, or 6 with seconds. `fresh` opens a new thread for every run; `continue` keeps one thread and resumes its session |
@@ -33,36 +34,82 @@ The first version supports **Claude Code**, **omp** (Oh My Pi) and **Antigravity
 | `!cron add … --name N --timeout MIN` | Sets the label shown in headers and `!cron list`, and the timeout for this schedule |
 | `!cron list` · `run <id>` · `pause <id>` · `resume <id>` · `rm <id>` | Manages schedules |
 | `!stop` · `!status` · `!release` (inside a thread) | Interrupts the turn · shows session info · frees the process (the next reply resumes it) |
+| `!trust [prompt]` (inside a 🔒 thread) | Gives the session full tools; with a prompt, sends it right away |
+| `!concise` · `!verbose` (inside a thread) | Switches how that thread shows tool calls, from the next turn |
 | `!help` | Shows the command list |
 
-How replies look:
+### How replies look
 
 - Answers use Slack's native streaming API (`chat.startStream`, `chat.appendStream`, `chat.stopStream`).
-- Tool calls render as timeline `task_update` cards.
+- `display: "concise"` (the default) folds a turn's tool calls and the narration between
+  them into one progress card that updates in place. Its title is what the agent is doing
+  now; at the end it summarises the steps, such as `5 steps · Bash ×3, Read ×2`. Only the
+  answer streams as text.
+  - Text is held for up to 2.5 s. If a tool call follows, the text was narration and becomes
+    the card's title. If not, it streams as the answer.
+- `display: "verbose"` shows one timeline card per tool call, with its input and output, and
+  streams all text.
 - A long answer rolls over into a new message.
 - If streaming fails, the bridge falls back to `chat.postMessage` plus `chat.update`.
 - Every turn ends with a footer: outcome, duration, model, context use and cost where the agent reports them.
 
-Sessions and resources:
+### Sessions, schedules and reliability
 
 - Sessions are keyed by `(channel, thread_ts)` and stored in SQLite.
 - A session idle for `idleMinutes` is disposed. So is the least recently used idle
   session when `maxLiveSessions` is reached. The next message in its thread resumes it
   from the stored session id.
-- Scheduled runs are skipped while the previous run of the same schedule is still going.
-  Runs missed while the bridge was down are not replayed.
+- **Stall watchdog.** After `stallMinutes` (default 10) without any agent event, the
+  thread gets a warning. With `stallAbortMinutes` set, the turn is also stopped.
+- **Missed messages.** Socket Mode can drop events. The bridge looks back over the owner's
+  DM and its recently active threads in three cases:
+  - on start, for messages that arrived while it was down (up to `backfillMinutes`);
+  - on every reconnect;
+  - every 2 minutes.
 
-Agents run unattended with their own default permissions:
+  Each Slack message is claimed in SQLite before it is handled, so it is handled only once
+  across live events, backfill and restarts. An edit that adds a mention of the bot counts
+  as a new request. Mentions in channel messages outside the bridge's threads are not backfilled.
+- **Schedules.** A firing is skipped while the previous run of the same schedule is still
+  going. If the bridge was down at a firing time within the last `cronCatchUpHours`, it
+  catches up on start, depending on `cronCatchUp`:
+  - `run` (the default): DMs the schedule's owner, then runs it once;
+  - `notify`: only DMs the owner;
+  - `off`: does nothing.
 
-- OAR starts Claude with bypassed permission prompts.
-- The ACP client approves `session/request_permission` with the first "allow" option.
+  A firing that throws is reported to the owner by DM.
+- **Memory.** With `agentMemoryMax` (default `8G`), every agent process runs in its own
+  `systemd-run --user --scope` with that `MemoryMax` and no swap. A runaway agent is
+  killed alone, not the bridge. OAR runtimes are pointed at wrapper scripts through
+  `OAR_CLAUDE_BIN` and `OAR_ANTIGRAVITY_BIN`.
+- Attachments older than `fileRetentionDays` are deleted.
 
-Unattended means:
+### Security
 
+- **Who can use it.** With `ownerOnly: true` (the default), only `allowUsers` can talk to
+  or mention the bot. It defaults to `ownerUserId`, and anyone else is ignored without a
+  reply. With `ownerOnly: false`, other people can mention or DM it. Their sessions are
+  always 🔒 read-only, they can talk only in sessions they started, and they can use only
+  `!help` and `!stop` on their own sessions.
+- **🔒 Read-only sessions** run on `restrictedAgent`, which must be an OAR Claude agent:
+  - Claude loads none of your user settings, MCP servers or allow rules (`--setting-sources project,local`, `--strict-mcp-config`);
+  - it runs in `--permission-mode dontAsk` and may use only Read, Grep and Glob;
+  - Bash, writing and editing tools, agent-spawning tools, scheduling tools and messaging tools are denied outright. This matters because Claude would otherwise auto-approve "read-only" shell commands such as `cat`.
+
+  A session becomes read-only when it starts in a thread where someone outside `allowUsers`
+  has written (`untrustedContext: "restrict"`), or when a guest starts it. That thread's
+  messages are passed as quoted information with angle brackets escaped, and the agent is
+  told not to follow them.
+- **Secrets.**
+  - Agent processes do not inherit `SLACK_BOT_TOKEN` or `SLACK_APP_TOKEN`.
+  - Claude's Read and Edit tools are denied the `secretPaths`: the bridge's env file, cc-connect's config, `~/.ssh`, `~/.aws`, gh hosts, `.netrc`, `.git-credentials` and `/proc/*/environ`.
+  - Everything the bridge posts to Slack is redacted: text, stream chunks and task cards. That covers token shapes (Slack, AWS, GitHub, GitLab, `sk-…`, Google, npm, JWT, private keys), `password=…`-style assignments, and the exact values of the bridge's secret environment variables.
+  - Text is flushed only at whitespace, so a token is never split across two appends where the redactor could not recognise it.
+
+  The agent still runs as your user, so with full tools it can read any file through the
+  shell. Redaction keeps recognisable secrets out of Slack; it is not a sandbox.
 - When an ACP agent asks for permission, the bridge grants only `allow_once`. It never
   grants `allow_always`, and it cancels the request if no allow option is offered.
-- Agent processes do not inherit `SLACK_BOT_TOKEN` or `SLACK_APP_TOKEN`.
-- Only `allowUsers` can drive the bridge. Messages from anyone else are ignored without a reply.
 
 ## Run
 
@@ -126,6 +173,9 @@ scripts/with-slack-env.sh npm run e2e   # real Slack + real claude/omp, see belo
 - an omp chat in the owner's DM, resumed after release
 - an omp one-shot run
 - exec and silent schedules, and a mention in a thread the bridge did not start
+- an attachment the agent has to read
+- in the concise display, two tool calls folded into one card
+- the Claude and omp processes each running in an 8G systemd scope
 - an Antigravity chat (tool card, context, resume after release) plus a one-shot run
 - a schedule that fires on its own into the DM
 - a continue-mode omp schedule run twice
@@ -138,9 +188,12 @@ message as a labelled seed, and the checks read the thread back with
 ## Layout
 
 ```
-src/agents/   types.ts (bridge-side contract) · oar.ts (OAR runtimes) · acp.ts (ACP client)
-src/slack/    api.ts (Web API slice) · render.ts (turn → stream/task cards) · app.ts (Bolt Socket Mode)
-src/core/     manager.ts (thread ↔ session) · binding.ts · router.ts · commands.ts · runner.ts (one-shot)
-src/sched/    scheduler.ts (croner)
-src/store.ts  node:sqlite
+src/agents/    types.ts (bridge-side contract) · oar.ts (OAR runtimes, restricted mode, secret-path denies)
+               acp.ts (ACP client) · memcap.ts (per-agent systemd scopes)
+src/slack/     api.ts (Web API slice) · render.ts (turn → stream: concise card or verbose cards) · app.ts (Bolt Socket Mode)
+src/core/      manager.ts (thread ↔ session) · binding.ts (turns, stall watchdog) · router.ts (access, commands, context)
+               commands.ts · runner.ts (one-shot, headless) · attachments.ts · backfill.ts
+src/sched/     scheduler.ts (croner, catch-up) · exec.ts
+src/security/  redact.ts (outbound redaction)
+src/store.ts   node:sqlite
 ```
