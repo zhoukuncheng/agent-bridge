@@ -40,6 +40,7 @@ export const defaultConfig: Config = {
   agents: {
     claude: { kind: "oar", runtime: "claude" },
     omp: { kind: "acp", command: "omp", args: ["acp"] },
+    agy: { kind: "oar", runtime: "antigravity" },
   },
   idleMinutes: 30,
   maxLiveSessions: 4,

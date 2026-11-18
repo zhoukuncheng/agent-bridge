@@ -4,12 +4,16 @@ Run local coding agents from Slack. Every agent session lives in its own Slack t
 Answers stream into the thread as they are written, and each tool call shows up as a
 task card while it runs. One-shot runs and scheduled runs are supported too.
 
-The first version supports **Claude Code** and **omp** (Oh My Pi).
+The first version supports **Claude Code**, **omp** (Oh My Pi) and **Antigravity** (`agy`).
 
 - **Claude Code** runs through [`@botiverse/oar`](https://github.com/botiverse/oar),
   which drives `claude -p` stream-json. OAR tracks new CLI releases, so picking up new
-  native features is mostly a dependency bump. Codex, Pi and Antigravity are one config
-  entry away (`{"kind": "oar", "runtime": "codex"}`), but they have not been tested here yet.
+  native features is mostly a dependency bump.
+- **Antigravity** also runs through OAR (`agy acp`), with `{"kind": "oar", "runtime": "antigravity"}`.
+  agy reports no model name, so its turn footer shows only the outcome, the duration and the
+  context use.
+- Codex and Pi are one config entry away (`{"kind": "oar", "runtime": "codex"}`), but they
+  have not been tested here yet.
 - **omp** runs through a small built-in [ACP](https://agentclientprotocol.com) client
   (`omp acp`). OAR's Pi runtime refuses omp's version string. Any other ACP agent can
   use the same `"kind": "acp"` entry.
@@ -89,6 +93,7 @@ scripts/with-slack-env.sh npm run e2e   # real Slack + real claude/omp, see belo
 - a channel chat with Claude Code: tool card, context across turns, resume after `!release`, `!stop`
 - an omp chat in the owner's DM, resumed after release
 - an omp one-shot run
+- an Antigravity chat (tool card, context, resume after release) plus a one-shot run
 - a schedule that fires on its own into the DM
 - a continue-mode omp schedule run twice
 

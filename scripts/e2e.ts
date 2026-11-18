@@ -24,6 +24,7 @@ const { values } = parseArgs({
     only: { type: "string" },
     "claude-model": { type: "string", default: "claude-haiku-5-5" },
     "omp-model": { type: "string" },
+    "agy-model": { type: "string" },
   },
 });
 const CHANNEL = values.channel!;
@@ -50,6 +51,7 @@ const config: Config = {
   agents: {
     claude: { kind: "oar", runtime: "claude", model: values["claude-model"] },
     omp: { kind: "acp", command: join(homedir(), ".local/bin/omp"), args: ["acp"], ...(values["omp-model"] ? { model: values["omp-model"] } : {}) },
+    agy: { kind: "oar", runtime: "antigravity", ...(values["agy-model"] ? { model: values["agy-model"] } : {}) },
   },
   maxLiveSessions: 3,
   runTimeoutMinutes: 5,
@@ -168,6 +170,30 @@ await scenario("omp-oneshot", async () => {
   const run = bridge.store.db.prepare("SELECT outcome FROM runs WHERE thread_ts = ?").get(root) as { outcome: string } | undefined;
   expect(run?.outcome === "completed", `run row: ${JSON.stringify(run)}`);
   return "completed, process released, run recorded";
+});
+
+// 3b. Antigravity (agy acp through OAR): chat with a tool call, context, resume after release, one-shot.
+await scenario("agy-channel-chat", async () => {
+  const root = await userSays(CHANNEL, "!chat --agent agy Remember the codeword KIWI-9. Use your shell tool to run `echo agy-tool-ok`, then reply with exactly: READY");
+  links.push(`agy chat: ${await permalink(CHANNEL, root)}`);
+  const first = await waitForReply(CHANNEL, root, root, finished);
+  expect(/READY/.test(first.text) && completed(first), `unexpected first answer: ${first.text.slice(0, 200)}`);
+  expect(hasTaskCard(first), "first answer has no tool task card");
+  const q = await userSays(CHANNEL, "What was the codeword? Reply with only the codeword.", root);
+  const second = await waitForReply(CHANNEL, root, q, finished);
+  expect(/KIWI-9/.test(second.text), `follow-up lost context: ${second.text.slice(0, 200)}`);
+  await bridge.manager.release(CHANNEL, root);
+  const q2 = await userSays(CHANNEL, "Repeat the codeword once more, only the codeword.", root);
+  const third = await waitForReply(CHANNEL, root, q2, finished);
+  expect(/KIWI-9/.test(third.text), `resumed agy session lost context: ${third.text.slice(0, 200)}`);
+
+  const shot = await userSays(CHANNEL, "!run --agent agy Reply with exactly: AGY-ONESHOT-OK");
+  links.push(`agy one-shot: ${await permalink(CHANNEL, shot)}`);
+  const answer = await waitForReply(CHANNEL, shot, shot, finished);
+  expect(/AGY-ONESHOT-OK/.test(answer.text) && completed(answer), `one-shot answer: ${answer.text.slice(0, 200)}`);
+  await Promise.all([...bridge.router.background]);
+  expect(bridge.manager.get(CHANNEL, shot) === undefined, "agy one-shot session still live");
+  return "tool card, context kept, resumed after release, one-shot completed";
 });
 
 // 4. Scheduled task that fires on its own (every 30 s) into the owner's DM, with Claude Code.
