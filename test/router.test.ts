@@ -153,7 +153,7 @@ test("!cron add / list / run / pause / rm", async () => {
   await bridge.router.handle(msg(`<@${BOT}> !cron run 1`));
   await settle(bridge);
   const header = slack.posts().find((p) => p.channel === "DOWNER" && !p.thread_ts)!;
-  assert.match(header.text, /⏰ \*Schedule #1\*/);
+  assert.match(header.text, /⏰ \*daily digest\* · #1 · omp/);
   assert.match(slack.textIn(header.ts), /echo: daily digest/);
   assert.equal(drivers.omp.sessions[0]!.disposed, true);
   assert.equal((bridge.store.lastRuns(1)[0]!).outcome, "completed");
@@ -171,7 +171,7 @@ test("continue-mode schedules reuse one thread and resume its session", async ()
   await bridge.router.handle(msg(`<@${BOT}> !cron add "0 0 1 1 *" --mode continue tick`));
   await bridge.scheduler.fire(1);
   await bridge.scheduler.fire(1);
-  const headers = slack.posts().filter((p) => p.text.startsWith("⏰ *Schedule"));
+  const headers = slack.posts().filter((p) => p.text.startsWith("⏰ *tick*"));
   assert.equal(headers.length, 1);
   assert.equal(bridge.store.getSchedule(1)!.thread_ts, headers[0]!.ts);
   assert.equal(drivers.claude.sessions.length, 2);
@@ -198,4 +198,76 @@ test("validation errors are reported in the thread", async () => {
   const badAgent = msg(`<@${BOT}> !run --agent nope x`);
   await bridge.router.handle(badAgent);
   assert.match(slack.posts(badAgent.ts).at(-1)!.text, /unknown agent "nope"/);
+});
+
+test("!new is an alias of !chat", async () => {
+  const { bridge, drivers, msg } = setup();
+  await bridge.router.handle(msg(`<@${BOT}> !new --agent omp hello`));
+  await waitFor(() => drivers.omp.sessions[0]?.inputs[0] === "hello");
+});
+
+test("mentioned in someone else's thread: the agent gets the earlier messages", async () => {
+  const { bridge, slack, drivers, msg } = setup();
+  slack.threads.set("1700.000100", [
+    { ts: "1700.000100", user: "UALICE", text: "prod is throwing 502s on /api/x" },
+    { ts: "1700.000200", user: "UBOB", text: "started after the 14:00 deploy &amp; only in us-east" },
+    { ts: "1800.000000", user: OWNER, text: "later message" },
+  ]);
+  await bridge.router.handle(msg(`<@${BOT}> what changed?`, { threadTs: "1700.000100", ts: "1700.000300" }));
+  await waitFor(() => drivers.claude.sessions[0]?.inputs.length === 1);
+  const input = drivers.claude.sessions[0]!.inputs[0]!;
+  assert.match(input, /name-of-UALICE: prod is throwing 502s/);
+  assert.match(input, /name-of-UBOB: started after the 14:00 deploy & only in us-east/);
+  assert.doesNotMatch(input, /later message/);
+  assert.match(input, /The request:\nwhat changed\?$/);
+  // A reply in the now-owned thread is sent as is.
+  await bridge.router.handle(msg("and before that?", { threadTs: "1700.000100" }));
+  await waitFor(() => drivers.claude.sessions[0]!.inputs.length === 2);
+  assert.equal(drivers.claude.sessions[0]!.inputs[1], "and before that?");
+});
+
+test("exec schedules post the command output; failures show the exit code", async () => {
+  const { bridge, slack, msg } = setup();
+  await bridge.router.handle(msg(`<@${BOT}> !cron add "0 0 1 1 *" --exec --name probe echo out-1; echo err-1 >&2`));
+  await bridge.router.handle(msg(`<@${BOT}> !cron add "0 0 1 1 *" --exec --timeout 1 exit 3`));
+  await bridge.scheduler.fire(1);
+  await bridge.scheduler.fire(2);
+  const posts = slack.posts().filter((p) => !p.thread_ts);
+  assert.match(posts.at(-2)!.text, /^⏰ ✅ \*probe\* · `echo out-1; echo err-1 >&2`\n\nout-1\nerr-1$/);
+  assert.match(posts.at(-1)!.text, /^⏰ ❌ .*error: exit code 3$/s);
+  assert.equal(bridge.store.lastRuns(1)[0]!.outcome, "completed");
+  assert.equal(bridge.store.lastRuns(2)[0]!.outcome, "failed");
+  const list = msg(`<@${BOT}> !cron list`);
+  await bridge.router.handle(list);
+  assert.match(slack.posts(list.ts).at(-1)!.text, /#1\* \*probe\* `0 0 1 1 \*` · exec/);
+});
+
+test("silent schedules post only the final answer, and its thread resumes the session", async () => {
+  const { bridge, slack, drivers, msg } = setup();
+  await bridge.router.handle(msg(`<@${BOT}> !cron add "0 0 1 1 *" --silent --agent omp TOOL quiet report`));
+  const before = slack.calls.length;
+  await bridge.scheduler.fire(1);
+  const calls = slack.calls.slice(before);
+  assert.deepEqual(calls.map((c) => c.method), ["postMessage"]);
+  const post = calls[0] as { text: string; ts: string; thread_ts?: string };
+  assert.equal(post.text, "echo: TOOL quiet report");
+  assert.equal(post.thread_ts, undefined);
+  assert.equal(drivers.omp.sessions[0]!.disposed, true);
+  await bridge.router.handle(msg("follow up", { threadTs: post.ts }));
+  await waitFor(() => drivers.omp.sessions[1]?.inputs[0] === "follow up");
+  assert.equal(drivers.omp.sessions[1]!.resumedFrom, drivers.omp.sessions[0]!.id);
+});
+
+test("silent schedules stay quiet on NO_REPLY and report failures", async () => {
+  const { bridge, slack, msg } = setup();
+  await bridge.router.handle(msg(`<@${BOT}> !cron add "0 0 1 1 *" --silent NOREPLY`));
+  await bridge.router.handle(msg(`<@${BOT}> !cron add "0 0 1 1 *" --silent FAIL`));
+  let before = slack.calls.length;
+  await bridge.scheduler.fire(1);
+  assert.equal(slack.calls.length, before);
+  assert.equal(bridge.store.lastRuns(1)[0]!.outcome, "completed");
+  before = slack.calls.length;
+  await bridge.scheduler.fire(2);
+  const post = slack.calls.slice(before)[0] as { text: string };
+  assert.match(post.text, /^⏰ ❌ \*FAIL\* failed: boom\n\necho: FAIL$/);
 });

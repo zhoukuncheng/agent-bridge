@@ -47,7 +47,7 @@ export function createBridge(opts: {
     renderOptions: opts.renderOptions,
   });
   const runner = new Runner(manager, store, api);
-  const scheduler = new Scheduler(store, runner, api, { runTimeoutMinutes: config.runTimeoutMinutes, teamId: opts.teamId });
+  const scheduler = new Scheduler(store, runner, manager, api, { runTimeoutMinutes: config.runTimeoutMinutes, teamId: opts.teamId });
   const router = new Router({ config, store, api, manager, runner, scheduler, botUserId: opts.botUserId, teamId: opts.teamId });
   return {
     store,

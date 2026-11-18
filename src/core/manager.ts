@@ -1,4 +1,4 @@
-import type { AgentDriver } from "../agents/types.ts";
+import type { AgentDriver, AgentSession } from "../agents/types.ts";
 import type { SlackApi } from "../slack/api.ts";
 import type { RenderOptions, ThreadTarget } from "../slack/render.ts";
 import type { Store, ThreadKind } from "../store.ts";
@@ -99,6 +99,13 @@ export class SessionManager {
     } finally {
       this.opening.delete(key);
     }
+  }
+
+  /** Opens a session that no thread owns yet (silent schedules); the caller disposes it. */
+  async openDetached(spec: SessionSpec): Promise<AgentSession> {
+    const driver = this.drivers[spec.agent];
+    if (!driver) throw new Error(`unknown agent "${spec.agent}" (configured: ${Object.keys(this.drivers).join(", ")})`);
+    return driver.open({ cwd: spec.cwd, model: spec.model });
   }
 
   /** Evicts the least recently used idle session when at capacity. */

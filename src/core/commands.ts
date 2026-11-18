@@ -13,6 +13,11 @@ export interface CronAddOptions extends RunOptions {
   channel?: string;
   mode?: "fresh" | "continue";
   tz?: string;
+  name?: string;
+  /** Post only the final answer, with no header or streaming. */
+  silent?: boolean;
+  /** The prompt is a shell command run with `sh -c`; its output is posted. */
+  exec?: boolean;
 }
 
 export type Command =
@@ -56,7 +61,8 @@ function readToken(text: string, pos: number): { token: string; end: number } | 
   return { token: text.slice(pos, end), end };
 }
 
-const valueOptions = new Set(["agent", "model", "cwd", "timeout", "channel", "mode", "tz"]);
+const valueOptions = new Set(["agent", "model", "cwd", "timeout", "channel", "mode", "tz", "name"]);
+const flagOptions = new Set(["silent", "exec"]);
 
 /** Parses leading `--name value` options; the rest of the text (verbatim) is the prompt. */
 export function parseOptions(text: string): { options: Record<string, string>; rest: string } | { error: string } {
@@ -66,6 +72,11 @@ export function parseOptions(text: string): { options: Record<string, string>; r
     const next = readToken(text, pos);
     if (!next || !next.token.startsWith("--")) break;
     const name = next.token.slice(2);
+    if (flagOptions.has(name)) {
+      options[name] = "true";
+      pos = next.end;
+      continue;
+    }
     if (!valueOptions.has(name)) return { error: `unknown option --${name}` };
     const value = readToken(text, next.end);
     if (!value) return { error: `--${name} needs a value` };
@@ -102,6 +113,7 @@ export function parseCommand(input: string): Command {
     case "status":
     case "release":
       return { kind: name };
+    case "new":
     case "chat":
     case "run": {
       const parsed = parseOptions(rest);
@@ -109,7 +121,7 @@ export function parseCommand(input: string): Command {
       const options = runOptions(parsed.options);
       if (typeof options === "string") return { kind: "error", message: options };
       if (!parsed.rest) return { kind: "error", message: `!${name} needs a prompt` };
-      return { kind: name, options, prompt: parsed.rest };
+      return { kind: name === "run" ? "run" : "chat", options, prompt: parsed.rest };
     }
     case "cron": {
       const sub = readToken(rest, 0);
@@ -128,7 +140,16 @@ export function parseCommand(input: string): Command {
         if (!parsed.rest) return { kind: "error", message: "!cron add needs a prompt" };
         return {
           kind: "cron_add",
-          options: { ...options, expr: expr.token, channel: parsed.options.channel, mode: mode as CronAddOptions["mode"], tz: parsed.options.tz },
+          options: {
+            ...options,
+            expr: expr.token,
+            channel: parsed.options.channel,
+            mode: mode as CronAddOptions["mode"],
+            tz: parsed.options.tz,
+            name: parsed.options.name,
+            silent: parsed.options.silent === "true",
+            exec: parsed.options.exec === "true",
+          },
           prompt: parsed.rest,
         };
       }
@@ -151,9 +172,10 @@ export function parseCommand(input: string): Command {
 export const helpText = [
   "*agent-bridge* — talk to coding agents from Slack.",
   "• Mention me (or DM me) to start a session; each session lives in its own thread. Reply in the thread to continue.",
-  "• `!chat --agent omp [--model M] [--cwd DIR] <prompt>` — start a session with a specific agent.",
+  "• `!chat` (or `!new`) `--agent omp|agy [--model M] [--cwd DIR] <prompt>` — start a session with a specific agent.",
   "• `!run [--agent A] [--timeout MIN] <prompt>` — one-shot task; the thread can still be continued afterwards.",
-  '• `!cron add "0 9 * * 1-5" [--agent A] [--channel here|dm|#chan] [--mode fresh|continue] [--tz Asia/Shanghai] <prompt>`',
+  '• `!cron add "0 9 * * 1-5" [--name N] [--agent A] [--channel here|dm|#chan] [--mode fresh|continue] [--tz Asia/Shanghai] [--timeout MIN] [--silent] [--exec] <prompt or shell command>`',
+  "  `--silent` posts only the final answer; `--exec` runs the text with `sh -c` and posts its output.",
   "• `!cron list` · `!cron run <id>` · `!cron pause <id>` · `!cron resume <id>` · `!cron rm <id>`",
   "• In a session thread: `!stop` interrupts the turn · `!status` · `!release` frees the process (the next reply resumes).",
 ].join("\n");

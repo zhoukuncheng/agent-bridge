@@ -4,12 +4,13 @@ import { expandHome, type Config } from "../config.ts";
 import type { SlackApi } from "../slack/api.ts";
 import type { ThreadTarget } from "../slack/render.ts";
 import { Scheduler } from "../sched/scheduler.ts";
-import type { Store } from "../store.ts";
+import type { ScheduleRow, Store } from "../store.ts";
 import { decodeSlackText, helpText, parseCommand, stripMention, type RunOptions } from "./commands.ts";
 import type { SessionManager, SessionSpec } from "./manager.ts";
 import type { Runner } from "./runner.ts";
 
 const channelRef = (id: string) => (id.startsWith("D") ? "DM" : `<#${id}>`);
+const scheduleKind = (row: ScheduleRow) => (row.exec ? "exec" : `${row.agent} · ${row.silent ? "silent" : row.mode}`);
 
 export interface InboundMessage {
   channel: string;
@@ -108,7 +109,7 @@ export class Router {
             await this.reply(msg.channel, anchor, helpText);
             return;
           }
-          return await this.chat(target, command.options, command.prompt, owned);
+          return await this.chat(target, command.options, command.prompt, owned, inThread ? msg.ts : undefined);
         case "run": {
           if (owned) {
             await this.reply(msg.channel, anchor, "⚠️ this thread already has a session; send `!run` as a new top-level message");
@@ -167,7 +168,21 @@ export class Router {
     return { agent, cwd, model: options.model, kind };
   }
 
-  private async chat(target: ThreadTarget, options: RunOptions, prompt: string, owned: boolean): Promise<void> {
+  /** The thread the bot was pulled into, before `beforeTs`, as plain text for the agent. */
+  private async threadContext(channel: string, threadTs: string, beforeTs: string): Promise<string> {
+    const messages = (await this.deps.api.replies(channel, threadTs)).filter((m) => Number(m.ts) < Number(beforeTs) && m.text.trim());
+    const lines: string[] = [];
+    for (const m of messages.slice(-40)) {
+      const who = m.user ? (m.user === this.deps.botUserId ? "you (bot)" : await this.deps.api.userName(m.user)) : "a bot";
+      const time = new Date(Number(m.ts) * 1000).toISOString().slice(0, 16).replace("T", " ");
+      lines.push(`[${time}] ${who}: ${decodeSlackText(m.text)}`);
+    }
+    let text = lines.join("\n");
+    if (text.length > 15_000) text = `…\n${text.slice(-15_000)}`;
+    return text;
+  }
+
+  private async chat(target: ThreadTarget, options: RunOptions, prompt: string, owned: boolean, mentionTs?: string): Promise<void> {
     const { manager } = this.deps;
     const spec = this.spec(target.channel, options, "chat");
     const stored = owned ? this.deps.store.getThread(target.channel, target.threadTs) : undefined;
@@ -184,7 +199,13 @@ export class Router {
       );
     }
     this.deps.store.touchThread(target.channel, target.threadTs);
-    const landed = await binding.send(prompt);
+    let input = prompt;
+    if (created && mentionTs) {
+      // Pulled into someone else's thread: give the agent what was said before the mention.
+      const context = await this.threadContext(target.channel, target.threadTs, mentionTs).catch(() => "");
+      if (context) input = `You were mentioned in an existing Slack thread. Earlier messages, oldest first:\n<thread>\n${context}\n</thread>\n\nThe request:\n${prompt}`;
+    }
+    const landed = await binding.send(input);
     if (landed === "steered") await this.reply(target.channel, target.threadTs, "↪️ added to the running turn");
     if (landed === "queued") await this.reply(target.channel, target.threadTs, "⏳ queued; it runs after the current turn");
   }
@@ -238,12 +259,16 @@ export class Router {
       model: spec.model,
       prompt: command.prompt,
       mode: command.options.mode ?? "fresh",
+      name: command.options.name,
+      silent: command.options.silent,
+      exec: command.options.exec,
+      timeout_min: command.options.timeoutMinutes,
       createdBy: msg.user,
     });
     await this.reply(
       msg.channel,
       anchor,
-      `🗓️ schedule *#${row.id}* · \`${row.cron}\`${row.tz ? ` (${row.tz})` : ""} · ${row.agent} · ${row.mode} · posts to ${channelRef(channel)}\nnext run: ${next ? next.toISOString() : "never"}`,
+      `🗓️ schedule *#${row.id}*${row.name ? ` ${row.name}` : ""} · \`${row.cron}\`${row.tz ? ` (${row.tz})` : ""} · ${scheduleKind(row)} · posts to ${channelRef(channel)}\nnext run: ${next ? next.toISOString() : "never"}`,
     );
   }
 
@@ -256,7 +281,8 @@ export class Router {
         const last = this.deps.store.lastRuns(row.id)[0];
         const state = !row.enabled ? "paused" : this.deps.scheduler.isRunning(row.id) ? "running" : `next ${next ? next.toISOString() : "never"}`;
         const lastText = last ? ` · last ${last.outcome ?? "running"}` : "";
-        return `*#${row.id}* \`${row.cron}\`${row.tz ? ` (${row.tz})` : ""} · ${row.agent} · ${row.mode} · ${channelRef(row.channel)} · ${state}${lastText}\n> ${truncate(row.prompt.replace(/\n/g, " "), 120)}`;
+        const title = row.name ? ` *${row.name}*` : "";
+        return `*#${row.id}*${title} \`${row.cron}\`${row.tz ? ` (${row.tz})` : ""} · ${scheduleKind(row)} · ${channelRef(row.channel)} · ${state}${lastText}\n> ${truncate(row.prompt.replace(/\n/g, " "), 120)}`;
       })
       .join("\n");
   }

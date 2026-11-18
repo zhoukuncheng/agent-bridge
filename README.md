@@ -23,10 +23,14 @@ The first version supports **Claude Code**, **omp** (Oh My Pi) and **Antigravity
 | You do | The bridge does |
 |---|---|
 | Mention the bot in a channel, or DM it | Starts a session (default agent). It posts a header in the thread, then streams the answer |
+| Mention the bot inside someone else's thread | Starts a session there, and gives the agent the thread's earlier messages first |
 | Reply in that thread (no mention needed) | Continues the same session. A reply sent while a turn is running is steered into it (Claude) or queued (omp) |
-| `!chat --agent omp [--model M] [--cwd DIR] <prompt>` | Starts a session with a specific agent, model or working directory |
+| `!chat` / `!new` `--agent omp [--model M] [--cwd DIR] <prompt>` | Starts a session with a specific agent, model or working directory |
 | `!run [--agent A] [--timeout MIN] <prompt>` | Runs a one-shot task, then frees the process. Replying in the thread resumes it |
 | `!cron add "<expr>" [--agent A] [--channel here\|dm\|#chan] [--mode fresh\|continue] [--tz TZ] <prompt>` | Adds a schedule. The expression has 5 fields, or 6 with seconds. `fresh` opens a new thread for every run; `continue` keeps one thread and resumes its session |
+| `!cron add … --silent` | Runs without a header or streaming, then posts only the final answer (`NO_REPLY` posts nothing). Replying to that answer resumes the run's session |
+| `!cron add … --exec <shell command>` | Runs the command with `sh -c` in the working directory and posts stdout and stderr, as cc-connect's `--exec` did |
+| `!cron add … --name N --timeout MIN` | Sets the label shown in headers and `!cron list`, and the timeout for this schedule |
 | `!cron list` · `run <id>` · `pause <id>` · `resume <id>` · `rm <id>` | Manages schedules |
 | `!stop` · `!status` · `!release` (inside a thread) | Interrupts the turn · shows session info · frees the process (the next reply resumes it) |
 | `!help` | Shows the command list |
@@ -80,6 +84,34 @@ It also needs the event subscriptions `app_mention`, `message.channels`, `messag
 connection open for an app. If this bridge shares an app with another bot, such as
 cc-connect, each message reaches only one of the two at random.
 
+## Migrating from cc-connect
+
+Stop agent-bridge first, then import cc-connect's cron jobs:
+
+```sh
+node scripts/migrate-cc-connect.ts --dry-run
+node scripts/migrate-cc-connect.ts
+```
+
+The import maps cc-connect's fields as follows:
+
+| cc-connect | agent-bridge |
+|---|---|
+| `slack:<channel>:<user>` session | that channel, owned by that user |
+| `description` | schedule name |
+| `exec` | an exec schedule |
+| `silent` / `mute` | `silent` |
+| `new_per_run` session mode | `fresh` |
+| `reuse` session mode (the cc-connect default) | `continue` |
+| `timeout_mins` | the schedule's timeout (default 30) |
+| disabled job | paused schedule |
+
+Running it again skips jobs it has already imported.
+
+cc-connect's sessions are keyed per chat, not per thread, so old conversations do not
+carry over. Scripts that read the bot token from `~/.cc-connect/config.toml` keep working
+as long as that file stays.
+
 ## Tests
 
 ```sh
@@ -93,6 +125,7 @@ scripts/with-slack-env.sh npm run e2e   # real Slack + real claude/omp, see belo
 - a channel chat with Claude Code: tool card, context across turns, resume after `!release`, `!stop`
 - an omp chat in the owner's DM, resumed after release
 - an omp one-shot run
+- exec and silent schedules, and a mention in a thread the bridge did not start
 - an Antigravity chat (tool card, context, resume after release) plus a one-shot run
 - a schedule that fires on its own into the DM
 - a continue-mode omp schedule run twice

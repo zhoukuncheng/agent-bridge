@@ -46,8 +46,12 @@ export class FakeSlack implements SlackApi {
   async openDm(userId: string) {
     return `D${userId.slice(1)}`;
   }
-  async replies(): Promise<ReplyMessage[]> {
-    return [];
+  threads = new Map<string, ReplyMessage[]>();
+  async replies(_channel: string, ts: string): Promise<ReplyMessage[]> {
+    return this.threads.get(ts) ?? [];
+  }
+  async userName(userId: string) {
+    return `name-of-${userId}`;
   }
 
   /** All markdown text streamed into the thread, plus posted/updated text. */
@@ -109,7 +113,7 @@ export class FakeSession implements AgentSession {
         this.emitter.emit({ type: "tool_start", id: "call-1", name: "Bash", detail: "echo hi" });
         this.emitter.emit({ type: "tool_end", id: "call-1", ok: true, output: "hi" });
       }
-      this.emitter.emit({ type: "text", text: `echo: ${text}` });
+      this.emitter.emit({ type: "text", text: text.includes("NOREPLY") ? "NO_REPLY" : `echo: ${text}` });
       this.end(text.includes("FAIL") ? "failed" : "completed", text.includes("FAIL") ? "boom" : undefined);
     }, 5);
   }

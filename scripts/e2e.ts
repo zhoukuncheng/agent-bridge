@@ -206,7 +206,7 @@ await scenario("cron-dm-claude", async () => {
   while (!header && Date.now() < deadline) {
     const history = await client.conversations.history({ channel: dm, limit: 20 });
     // Earlier e2e runs also had a schedule #1 in this DM; only count headers posted after this add.
-    header = history.messages?.find((m) => m.bot_id && Number(m.ts) > Number(cmd) && m.text?.includes(`Schedule #${id}`))?.ts;
+    header = history.messages?.find((m) => m.bot_id && Number(m.ts) > Number(cmd) && m.text?.includes(`· #${id} ·`))?.ts;
     if (!header) await sleep(3000);
   }
   expect(Boolean(header), `schedule #${id} never fired`);
@@ -239,6 +239,43 @@ await scenario("cron-continue-omp", async () => {
   expect(/TICK 2/.test(answers[1]!.text), `second run did not see the first: ${answers[1]!.text.slice(0, 120)}`);
   bridge.scheduler.remove(id);
   return "two runs in one thread, second saw the first";
+});
+
+// 6. Exec and silent schedules (cc-connect parity), triggered with !cron run into the DM.
+await scenario("cron-exec-silent", async () => {
+  const add1 = await userSays(CHANNEL, '!cron add "0 0 1 1 *" --exec --name e2e-exec --channel dm echo e2e-exec-ok; echo to-stderr >&2');
+  const ack1 = await waitForReply(CHANNEL, add1, add1, (m) => /#\d+/.test(m.text), 30_000);
+  const execId = Number(ack1.text.match(/#(\d+)/)![1]);
+  const add2 = await userSays(CHANNEL, '!cron add "0 0 1 1 *" --silent --name e2e-silent --channel dm Use your shell tool to run `echo silent-tool`, then reply with exactly: SILENT-OK');
+  const ack2 = await waitForReply(CHANNEL, add2, add2, (m) => /#\d+/.test(m.text), 30_000);
+  const silentId = Number(ack2.text.match(/#(\d+)/)![1]);
+  const since = (await api.postMessage({ channel: dm, text: `🧪 _e2e ${runTag}: exec + silent schedules_` })).ts;
+  await bridge.scheduler.fire(execId);
+  await bridge.scheduler.fire(silentId);
+  const history = (await client.conversations.history({ channel: dm, oldest: since, limit: 20 })).messages ?? [];
+  const execMsg = history.find((m) => m.text?.includes("e2e-exec"));
+  expect(Boolean(execMsg) && /✅|white_check_mark/.test(execMsg!.text!) && /e2e-exec-ok/.test(execMsg!.text!) && /to-stderr/.test(execMsg!.text!), `exec message: ${execMsg?.text}`);
+  const silentMsgs = history.filter((m) => m.bot_id && Number(m.ts) > Number(since) && !m.text?.includes("e2e-exec"));
+  expect(silentMsgs.length === 1 && silentMsgs[0]!.text?.trim() === "SILENT-OK", `silent run should post exactly the answer, got ${JSON.stringify(silentMsgs.map((m) => m.text))}`);
+  links.push(`exec + silent in DM: ${await permalink(dm, since)}`);
+  // The silent answer's thread continues the run's session.
+  const q = await userSays(dm, "What exact text did you reply last time? Reply with only that text, lowercased.", silentMsgs[0]!.ts!);
+  const follow = await waitForReply(dm, silentMsgs[0]!.ts!, q, finished);
+  expect(/silent-ok/.test(follow.text), `silent session not resumed: ${follow.text.slice(0, 200)}`);
+  bridge.scheduler.remove(execId);
+  bridge.scheduler.remove(silentId);
+  return "exec posted stdout+stderr, silent posted only the answer, its thread resumed";
+});
+
+// 7. Mentioned in a thread the bridge did not start: the agent reads the thread first.
+await scenario("thread-context", async () => {
+  const root = (await api.postMessage({ channel: CHANNEL, text: `🧪 _e2e ${runTag}:_ deploy of build 8812 failed with error code E-4711 on the canary` })).ts;
+  await api.postMessage({ channel: CHANNEL, thread_ts: root, text: "🧪 rollback is done, the root cause is still open" });
+  links.push(`thread context: ${await permalink(CHANNEL, root)}`);
+  const ask = await userSays(CHANNEL, "Which error code was reported earlier in this thread? Reply with only the code.", root);
+  const answer = await waitForReply(CHANNEL, root, ask, finished);
+  expect(/E-4711/.test(answer.text), `answer without thread context: ${answer.text.slice(0, 200)}`);
+  return "answered from the thread's earlier messages";
 });
 
 await bridge.shutdown();

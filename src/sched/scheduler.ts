@@ -1,39 +1,38 @@
 import { Cron } from "croner";
-import type { Runner } from "../core/runner.ts";
+import type { SessionManager } from "../core/manager.ts";
+import { runHeadless, type Runner } from "../core/runner.ts";
 import type { SlackApi } from "../slack/api.ts";
-import type { ScheduleMode, ScheduleRow, Store } from "../store.ts";
+import type { NewScheduleRow, ScheduleRow, Store } from "../store.ts";
 import { truncate } from "../agents/types.ts";
+import { runShell } from "./exec.ts";
 
-export interface NewSchedule {
-  cron: string;
-  tz?: string;
-  channel: string;
-  agent: string;
-  cwd: string;
-  model?: string;
-  prompt: string;
-  mode: ScheduleMode;
-  createdBy: string;
-}
+export type NewSchedule = Omit<NewScheduleRow, "created_by"> & { createdBy: string };
+
+export const scheduleLabel = (row: ScheduleRow) => row.name || truncate(row.prompt.replace(/\s+/g, " "), 60);
 
 /**
- * In-process cron. Each firing runs the prompt once: `fresh` schedules open a new
- * top-level thread every time; `continue` schedules keep one thread and resume its
- * session. A firing is skipped while the previous one is still running. Firings missed
- * while the bridge was down are not replayed.
+ * In-process cron. A firing runs one of three ways:
+ * - agent, default: a header message, then the answer streams into its thread
+ *   (`fresh`: a new thread every time; `continue`: one thread, resumed session);
+ * - agent, silent: nothing while it works, then only the final answer, as a new message
+ *   whose thread continues the session (cc-connect's `silent`);
+ * - exec: `sh -c` the command and post its output (cc-connect's `--exec`).
+ * A firing is skipped while the previous one is still running. Firings missed while the
+ * bridge was down are not replayed.
  */
 export class Scheduler {
   private jobs = new Map<number, Cron>();
   private running = new Set<number>();
-
   private readonly store: Store;
   private readonly runner: Runner;
+  private readonly manager: SessionManager;
   private readonly api: SlackApi;
   private readonly options: { runTimeoutMinutes: number; teamId?: string };
 
-  constructor(store: Store, runner: Runner, api: SlackApi, options: { runTimeoutMinutes: number; teamId?: string }) {
+  constructor(store: Store, runner: Runner, manager: SessionManager, api: SlackApi, options: { runTimeoutMinutes: number; teamId?: string }) {
     this.store = store;
     this.runner = runner;
+    this.manager = manager;
     this.api = api;
     this.options = options;
   }
@@ -48,7 +47,7 @@ export class Scheduler {
   }
 
   /** Throws when the expression or timezone is invalid. */
-  static validate(expr: string, tz?: string): Date | null {
+  static validate(expr: string, tz?: string | null): Date | null {
     const probe = new Cron(expr, { paused: true, ...(tz ? { timezone: tz } : {}) });
     const next = probe.nextRun();
     probe.stop();
@@ -57,18 +56,9 @@ export class Scheduler {
 
   add(spec: NewSchedule): ScheduleRow {
     Scheduler.validate(spec.cron, spec.tz);
-    const row = this.store.addSchedule({
-      cron: spec.cron,
-      tz: spec.tz ?? null,
-      channel: spec.channel,
-      agent: spec.agent,
-      cwd: spec.cwd,
-      model: spec.model ?? null,
-      prompt: spec.prompt,
-      mode: spec.mode,
-      created_by: spec.createdBy,
-    });
-    this.arm(row);
+    const { createdBy, ...rest } = spec;
+    const row = this.store.addSchedule({ ...rest, created_by: createdBy });
+    if (row.enabled) this.arm(row);
     return row;
   }
 
@@ -116,30 +106,71 @@ export class Scheduler {
     this.running.add(id);
     try {
       this.store.markScheduleRun(id);
-      const header = `⏰ *Schedule #${row.id}* · ${row.agent} · \`${row.cron}\`${row.tz ? ` (${row.tz})` : ""}\n> ${truncate(row.prompt.replace(/\n/g, " "), 300)}`;
-      let threadTs: string;
-      if (row.mode === "continue" && row.thread_ts) {
-        threadTs = row.thread_ts;
-        await this.api.postMessage({ channel: row.channel, thread_ts: threadTs, text: `⏰ run at ${new Date().toISOString()}` });
-      } else {
-        threadTs = (await this.api.postMessage({ channel: row.channel, text: header })).ts;
-        if (row.mode === "continue") this.store.setScheduleThread(id, threadTs);
-      }
-      const isDm = row.channel.startsWith("D");
-      await this.runner.runOnce({
-        target: {
-          channel: row.channel,
-          threadTs,
-          ...(isDm ? {} : { recipientUserId: row.created_by, teamId: this.options.teamId }),
-        },
-        spec: { agent: row.agent, cwd: row.cwd, model: row.model ?? undefined, kind: "cron" },
-        prompt: row.prompt,
-        timeoutMinutes: this.options.runTimeoutMinutes,
-        scheduleId: id,
-      });
+      const timeout = row.timeout_min ?? this.options.runTimeoutMinutes;
+      if (row.exec) await this.fireExec(row, timeout);
+      else if (row.silent) await this.fireSilent(row, timeout);
+      else await this.fireStreamed(row, timeout);
       return true;
     } finally {
       this.running.delete(id);
     }
+  }
+
+  private setRunThread(runId: number, ts: string): void {
+    this.store.db.prepare("UPDATE runs SET thread_ts = ? WHERE id = ?").run(ts, runId);
+  }
+
+  private async fireExec(row: ScheduleRow, timeout: number): Promise<void> {
+    const runId = this.store.startRun(row.id, row.channel, "", "exec");
+    const result = await runShell(row.prompt, row.cwd, timeout);
+    const output = truncate(result.output.trim(), 3500);
+    const head = `*${scheduleLabel(row)}* · \`${truncate(row.prompt, 60)}\``;
+    let text: string;
+    if (result.timedOut) text = `⏰ ⚠️ ${head} timed out after ${timeout} min${output ? `\n\n${output}` : ""}`;
+    else if (result.code === 0) text = `⏰ ✅ ${head}\n\n${output || "(no output)"}`;
+    else text = `⏰ ❌ ${head}${output ? `\n\n${output}` : ""}\n\nerror: exit code ${result.code}`;
+    const { ts } = await this.api.postMessage({ channel: row.channel, text });
+    this.setRunThread(runId, ts);
+    const outcome = result.timedOut ? "aborted" : result.code === 0 ? "completed" : "failed";
+    this.store.finishRun(runId, outcome, outcome === "completed" ? undefined : `exit ${result.code}`);
+  }
+
+  private async fireSilent(row: ScheduleRow, timeout: number): Promise<void> {
+    const spec = { agent: row.agent, cwd: row.cwd, model: row.model ?? undefined, kind: "cron" as const };
+    const runId = this.store.startRun(row.id, row.channel, "", row.agent);
+    const result = await runHeadless(this.manager, spec, row.prompt, timeout);
+    let text = result.answer === "NO_REPLY" ? "" : result.answer;
+    if (result.outcome !== "completed") {
+      text = `⏰ ❌ *${scheduleLabel(row)}* ${result.outcome}${result.error ? `: ${result.error}` : ""}${text ? `\n\n${text}` : ""}`;
+    }
+    if (text) {
+      const { ts } = await this.api.postMessage({ channel: row.channel, text: truncate(text, 39_000) });
+      this.setRunThread(runId, ts);
+      // Replying in the answer's thread continues the run's session.
+      if (result.sessionId) {
+        this.store.upsertThread({ channel: row.channel, thread_ts: ts, agent: row.agent, session_id: result.sessionId, cwd: row.cwd, model: row.model, kind: "cron" });
+      }
+    }
+    this.store.finishRun(runId, result.outcome, result.error);
+  }
+
+  private async fireStreamed(row: ScheduleRow, timeout: number): Promise<void> {
+    const header = `⏰ *${scheduleLabel(row)}* · #${row.id} · ${row.agent} · \`${row.cron}\`${row.tz ? ` (${row.tz})` : ""}`;
+    let threadTs: string;
+    if (row.mode === "continue" && row.thread_ts) {
+      threadTs = row.thread_ts;
+      await this.api.postMessage({ channel: row.channel, thread_ts: threadTs, text: `⏰ run at ${new Date().toISOString()}` });
+    } else {
+      threadTs = (await this.api.postMessage({ channel: row.channel, text: header })).ts;
+      if (row.mode === "continue") this.store.setScheduleThread(row.id, threadTs);
+    }
+    const isDm = row.channel.startsWith("D");
+    await this.runner.runOnce({
+      target: { channel: row.channel, threadTs, ...(isDm ? {} : { recipientUserId: row.created_by, teamId: this.options.teamId }) },
+      spec: { agent: row.agent, cwd: row.cwd, model: row.model ?? undefined, kind: "cron" },
+      prompt: row.prompt,
+      timeoutMinutes: timeout,
+      scheduleId: row.id,
+    });
   }
 }

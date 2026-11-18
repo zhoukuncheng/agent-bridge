@@ -8,6 +8,8 @@ export interface OarAgentConfig {
   /** Native launch arguments; applied on every open, including resume (claude needs --permission-mode repeated). */
   launchArgs?: string[];
   env?: Record<string, string>;
+  /** Appended to the runtime's own system prompt on every open (where the runtime supports it). */
+  appendSystemPrompt?: string;
 }
 
 /** Pulls the most useful field out of a tool's JSON arguments for a one-line summary. */
@@ -133,6 +135,7 @@ export class OarDriver implements AgentDriver {
       ...(model ? { model } : {}),
       ...(options.resume ? { resume: options.resume } : {}),
       ...(this.config.launchArgs?.length ? { launchArgs: this.config.launchArgs } : {}),
+      ...(this.config.appendSystemPrompt ? { appendSystemPrompt: this.config.appendSystemPrompt } : {}),
       // null removes a variable from what the runtime process inherits.
       env: { ...this.config.env, ...Object.fromEntries(bridgeSecretEnv.map((name) => [name, null])) },
     });

@@ -22,8 +22,14 @@ test("!cron add takes a quoted expression (straight or smart quotes after decodi
   const parsed = parseCommand(decodeSlackText('!cron add “0 9 * * 1-5” --agent omp --channel dm --mode continue --tz Asia/Shanghai daily report'));
   assert.deepEqual(parsed, {
     kind: "cron_add",
-    options: { expr: "0 9 * * 1-5", agent: "omp", channel: "dm", mode: "continue", tz: "Asia/Shanghai" },
+    options: { expr: "0 9 * * 1-5", agent: "omp", channel: "dm", mode: "continue", tz: "Asia/Shanghai", name: undefined, silent: false, exec: false },
     prompt: "daily report",
+  });
+  const flags = parseCommand('!cron add "0 9 * * *" --silent --name "PR review" --exec --timeout 10 ./run.sh --flag');
+  assert.deepEqual(flags, {
+    kind: "cron_add",
+    options: { expr: "0 9 * * *", timeoutMinutes: 10, channel: undefined, mode: undefined, tz: undefined, name: "PR review", silent: true, exec: true },
+    prompt: "./run.sh --flag",
   });
   assert.equal(parseCommand('!cron add "* * * * *" --mode weekly x').kind, "error");
   assert.equal(parseCommand('!cron add "* * * * *"').kind, "error");

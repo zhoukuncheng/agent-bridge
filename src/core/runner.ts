@@ -4,12 +4,63 @@ import type { Store } from "../store.ts";
 import type { TurnResult } from "./binding.ts";
 import type { SessionManager, SessionSpec } from "./manager.ts";
 
+export interface HeadlessResult extends TurnResult {
+  /** Text the agent wrote after its last tool call: its final answer. */
+  answer: string;
+  sessionId?: string;
+}
+
 export interface OneShotRequest {
   target: ThreadTarget;
   spec: SessionSpec;
   prompt: string;
   timeoutMinutes: number;
   scheduleId?: number;
+}
+
+/**
+ * Runs a prompt with no Slack output while it works and returns the final answer.
+ * Used by silent schedules, which post only the result.
+ */
+export async function runHeadless(manager: SessionManager, spec: SessionSpec, prompt: string, timeoutMinutes: number): Promise<HeadlessResult> {
+  let session;
+  try {
+    session = await manager.openDetached(spec);
+  } catch (err) {
+    return { outcome: "failed", error: (err as Error).message, answer: "" };
+  }
+  let answer = "";
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const ended = new Promise<TurnResult>((resolve) => {
+      session.onEvent((event) => {
+        if (event.type === "tool_start") answer = "";
+        else if (event.type === "text") answer += event.text;
+        else if (event.type === "turn_end") resolve({ outcome: event.outcome, error: event.error });
+        else if (event.type === "exited") resolve({ outcome: "failed", error: `agent process exited (${event.code})` });
+      });
+    });
+    let timedOut = false;
+    const gaveUp = new Promise<TurnResult>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        void session.abort().catch(() => {});
+        setTimeout(() => resolve({ outcome: "aborted" }), 15_000).unref();
+      }, timeoutMinutes * 60_000);
+      timer.unref();
+    });
+    await session.send(prompt);
+    const turn = await Promise.race([ended, gaveUp]);
+    const result: HeadlessResult = timedOut
+      ? { outcome: "aborted", error: `timed out after ${timeoutMinutes} min`, answer: answer.trim(), sessionId: session.id }
+      : { ...turn, answer: answer.trim(), sessionId: session.id };
+    return result;
+  } catch (err) {
+    return { outcome: "failed", error: (err as Error).message, answer: answer.trim(), sessionId: session.id };
+  } finally {
+    clearTimeout(timer);
+    await session.dispose().catch(() => {});
+  }
 }
 
 /** Runs a single prompt to completion in a thread, then frees the process (replies resume it). */

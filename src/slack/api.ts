@@ -21,10 +21,13 @@ export interface SlackApi {
   stopStream(args: { channel: string; ts: string }): Promise<void>;
   openDm(userId: string): Promise<string>;
   replies(channel: string, ts: string): Promise<ReplyMessage[]>;
+  /** Display name for a user id; falls back to the id. */
+  userName(userId: string): Promise<string>;
 }
 
 export class WebSlackApi implements SlackApi {
   private readonly client: WebClient;
+  private readonly names = new Map<string, string>();
 
   constructor(client: WebClient) {
     this.client = client;
@@ -67,5 +70,19 @@ export class WebSlackApi implements SlackApi {
       cursor = page.response_metadata?.next_cursor || undefined;
     } while (cursor);
     return messages;
+  }
+
+  async userName(userId: string): Promise<string> {
+    const cached = this.names.get(userId);
+    if (cached) return cached;
+    let name = userId;
+    try {
+      const result = await this.client.users.info({ user: userId });
+      name = result.user?.profile?.display_name || result.user?.real_name || result.user?.name || userId;
+    } catch {
+      // users:read missing or user gone: keep the id.
+    }
+    this.names.set(userId, name);
+    return name;
   }
 }

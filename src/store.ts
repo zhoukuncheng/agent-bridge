@@ -20,19 +20,46 @@ export type ScheduleMode = "fresh" | "continue";
 
 export interface ScheduleRow {
   id: number;
+  name: string | null;
   cron: string;
   tz: string | null;
   channel: string;
   agent: string;
   cwd: string;
   model: string | null;
+  /** The agent prompt; for an exec schedule, the shell command. */
   prompt: string;
+  /** 1: run `prompt` with `sh -c` instead of an agent and post its output. */
+  exec: number;
+  /** 1: no header or streaming; post only the final answer (cc-connect's silent). */
+  silent: number;
+  timeout_min: number | null;
+  /** Where an imported schedule came from, e.g. cc-connect:3625cb51; keeps imports idempotent. */
+  origin: string | null;
   mode: ScheduleMode;
   thread_ts: string | null;
   enabled: number;
   created_by: string;
   created_at: number;
   last_run_at: number | null;
+}
+
+export interface NewScheduleRow {
+  name?: string | null;
+  cron: string;
+  tz?: string | null;
+  channel: string;
+  agent: string;
+  cwd: string;
+  model?: string | null;
+  prompt: string;
+  exec?: boolean;
+  silent?: boolean;
+  timeout_min?: number | null;
+  origin?: string | null;
+  mode: ScheduleMode;
+  enabled?: boolean;
+  created_by: string;
 }
 
 export interface RunRow {
@@ -67,6 +94,15 @@ export class Store {
         id INTEGER PRIMARY KEY AUTOINCREMENT, schedule_id INTEGER, channel TEXT NOT NULL, thread_ts TEXT NOT NULL,
         agent TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT, error TEXT);
     `);
+    const columns = new Set((this.db.prepare("PRAGMA table_info(schedules)").all() as { name: string }[]).map((c) => c.name));
+    const added: [string, string][] = [
+      ["name", "TEXT"],
+      ["exec", "INTEGER NOT NULL DEFAULT 0"],
+      ["silent", "INTEGER NOT NULL DEFAULT 0"],
+      ["timeout_min", "INTEGER"],
+      ["origin", "TEXT"],
+    ];
+    for (const [name, type] of added) if (!columns.has(name)) this.db.exec(`ALTER TABLE schedules ADD COLUMN ${name} ${type}`);
   }
 
   getThread(channel: string, threadTs: string): ThreadRow | undefined {
@@ -87,12 +123,33 @@ export class Store {
     this.db.prepare("UPDATE threads SET last_active = ? WHERE channel = ? AND thread_ts = ?").run(Date.now(), channel, threadTs);
   }
 
-  addSchedule(row: Omit<ScheduleRow, "id" | "enabled" | "created_at" | "last_run_at" | "thread_ts">): ScheduleRow {
+  addSchedule(row: NewScheduleRow): ScheduleRow {
     const result = this.db
-      .prepare(`INSERT INTO schedules (cron, tz, channel, agent, cwd, model, prompt, mode, created_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(row.cron, row.tz, row.channel, row.agent, row.cwd, row.model, row.prompt, row.mode, row.created_by, Date.now());
+      .prepare(`INSERT INTO schedules (name, cron, tz, channel, agent, cwd, model, prompt, exec, silent, timeout_min, origin, mode, enabled, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        row.name ?? null,
+        row.cron,
+        row.tz ?? null,
+        row.channel,
+        row.agent,
+        row.cwd,
+        row.model ?? null,
+        row.prompt,
+        row.exec ? 1 : 0,
+        row.silent ? 1 : 0,
+        row.timeout_min ?? null,
+        row.origin ?? null,
+        row.mode,
+        row.enabled === false ? 0 : 1,
+        row.created_by,
+        Date.now(),
+      );
     return this.getSchedule(Number(result.lastInsertRowid))!;
+  }
+
+  findScheduleByOrigin(origin: string): ScheduleRow | undefined {
+    return this.db.prepare("SELECT * FROM schedules WHERE origin = ?").get(origin) as ScheduleRow | undefined;
   }
 
   getSchedule(id: number): ScheduleRow | undefined {
