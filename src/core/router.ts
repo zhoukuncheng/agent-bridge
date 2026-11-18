@@ -9,6 +9,8 @@ import { decodeSlackText, helpText, parseCommand, stripMention, type RunOptions 
 import type { SessionManager, SessionSpec } from "./manager.ts";
 import type { Runner } from "./runner.ts";
 
+/** Other people wrote thread context: escape angle brackets so nothing in it can open or close the <thread> block. */
+const neutralize = (text: string) => text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const channelRef = (id: string) => (id.startsWith("D") ? "DM" : `<#${id}>`);
 const scheduleKind = (row: ScheduleRow) => (row.exec ? "exec" : `${row.agent} · ${row.silent ? "silent" : row.mode}`);
 
@@ -173,10 +175,9 @@ export class Router {
     const messages = (await this.deps.api.replies(channel, threadTs)).filter((m) => Number(m.ts) < Number(beforeTs) && m.text.trim());
     const lines: string[] = [];
     for (const m of messages.slice(-40)) {
-      const who = m.user ? (m.user === this.deps.botUserId ? "you (bot)" : await this.deps.api.userName(m.user)) : "a bot";
+      const who = m.user ? (m.user === this.deps.botUserId ? "you (bot)" : neutralize(await this.deps.api.userName(m.user)).replace(/\s+/g, " ")) : "a bot";
       const time = new Date(Number(m.ts) * 1000).toISOString().slice(0, 16).replace("T", " ");
-      // Other people wrote these: keep them from closing the <thread> block early.
-      lines.push(`[${time}] ${who}: ${decodeSlackText(m.text).replace(/<\/?thread>/gi, "")}`);
+      lines.push(`[${time}] ${who}: ${neutralize(decodeSlackText(m.text))}`);
     }
     let text = lines.join("\n");
     if (text.length > 15_000) text = `…\n${text.slice(-15_000)}`;
