@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { Emitter, truncate, type AgentDriver, type AgentEvent, type AgentSession, type OpenOptions, type SendResult } from "./types.ts";
+import { bridgeSecretEnv, Emitter, truncate, type AgentDriver, type AgentEvent, type AgentSession, type OpenOptions, type SendResult } from "./types.ts";
 
 // Minimal Agent Client Protocol client (https://agentclientprotocol.com) for agents
 // OAR does not cover, such as omp. One subprocess per session, JSON-RPC over stdio.
@@ -239,6 +239,15 @@ class AcpSession implements AgentSession {
   }
 }
 
+/**
+ * The bridge runs agents unattended, as cc-connect's yolo mode did: approve this one call.
+ * Never picks allow_always (which would persist a grant) or an arbitrary option.
+ */
+export function choosePermission(options: Json[]): Json {
+  const pick = options.find((o) => o.kind === "allow_once") ?? options.find((o) => o.kind === "allow");
+  return pick ? { outcome: "selected", optionId: pick.optionId } : { outcome: "cancelled" };
+}
+
 export class AcpDriver implements AgentDriver {
   readonly name: string;
   private readonly config: AcpAgentConfig;
@@ -249,18 +258,17 @@ export class AcpDriver implements AgentDriver {
   }
 
   async open(options: OpenOptions): Promise<AgentSession> {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...this.config.env };
+    for (const name of bridgeSecretEnv) delete env[name];
     const child = spawn(this.config.command, this.config.args ?? [], {
       cwd: options.cwd,
-      env: { ...process.env, ...this.config.env },
+      env,
       stdio: ["pipe", "pipe", "pipe"],
     });
     const conn = new AcpConnection(child);
     conn.onRequest = async (method, params) => {
       if (method === "session/request_permission") {
-        // The bridge runs agents unattended; approve with the first allow option.
-        const options: Json[] = params.options ?? [];
-        const allow = options.find((o) => String(o.kind).startsWith("allow")) ?? options[0];
-        return allow ? { outcome: { outcome: "selected", optionId: allow.optionId } } : { outcome: { outcome: "cancelled" } };
+        return { outcome: choosePermission(params.options ?? []) };
       }
       throw Object.assign(new Error(`method not supported: ${method}`), { code: -32601 });
     };

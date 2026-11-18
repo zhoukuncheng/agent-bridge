@@ -49,7 +49,12 @@ Agents run unattended with their own default permissions:
 - OAR starts Claude with bypassed permission prompts.
 - The ACP client approves `session/request_permission` with the first "allow" option.
 
-Only `allowUsers` can drive the bridge. Messages from anyone else are ignored without a reply.
+Unattended means:
+
+- When an ACP agent asks for permission, the bridge grants only `allow_once`. It never
+  grants `allow_always`, and it cancels the request if no allow option is offered.
+- Agent processes do not inherit `SLACK_BOT_TOKEN` or `SLACK_APP_TOKEN`.
+- Only `allowUsers` can drive the bridge. Messages from anyone else are ignored without a reply.
 
 ## Run
 

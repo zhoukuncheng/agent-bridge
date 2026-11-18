@@ -1,5 +1,5 @@
 import { defaultRuntimes, type Event, type Runtime, type Session } from "@botiverse/oar";
-import { Emitter, truncate, type AgentDriver, type AgentEvent, type AgentSession, type OpenOptions, type SendResult } from "./types.ts";
+import { bridgeSecretEnv, Emitter, truncate, type AgentDriver, type AgentEvent, type AgentSession, type OpenOptions, type SendResult } from "./types.ts";
 
 export interface OarAgentConfig {
   /** OAR runtime id: claude, codex, antigravity, pi, ... */
@@ -133,7 +133,8 @@ export class OarDriver implements AgentDriver {
       ...(model ? { model } : {}),
       ...(options.resume ? { resume: options.resume } : {}),
       ...(this.config.launchArgs?.length ? { launchArgs: this.config.launchArgs } : {}),
-      ...(this.config.env ? { env: this.config.env } : {}),
+      // null removes a variable from what the runtime process inherits.
+      env: { ...this.config.env, ...Object.fromEntries(bridgeSecretEnv.map((name) => [name, null])) },
     });
     return new OarSession(this.name, session);
   }

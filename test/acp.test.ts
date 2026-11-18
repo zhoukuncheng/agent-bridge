@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { AcpDriver } from "../src/agents/acp.ts";
+import { AcpDriver, choosePermission } from "../src/agents/acp.ts";
 import type { AgentEvent, AgentSession } from "../src/agents/types.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp-agent.mjs", import.meta.url));
@@ -100,4 +100,26 @@ test("process exit fails the running turn and reports exited", async () => {
   assert.equal(((await ended) as { outcome: string }).outcome, "failed");
   await new Promise((r) => setTimeout(r, 20));
   assert.ok(events.some((e) => e.type === "exited"));
+});
+
+test("permission requests approve once, never always, and cancel when no allow option exists", () => {
+  assert.deepEqual(choosePermission([{ optionId: "a", kind: "allow_always" }, { optionId: "o", kind: "allow_once" }]), { outcome: "selected", optionId: "o" });
+  assert.deepEqual(choosePermission([{ optionId: "a", kind: "allow_always" }, { optionId: "r", kind: "reject_once" }]), { outcome: "cancelled" });
+  assert.deepEqual(choosePermission([]), { outcome: "cancelled" });
+});
+
+test("agent processes do not inherit the bridge's Slack tokens", async () => {
+  process.env.SLACK_BOT_TOKEN = "xoxb-test-secret";
+  try {
+    const session = await driver().open({ cwd: tmpdir() });
+    const events = collect(session);
+    const ended = turnEnd(session);
+    await session.send("ENV SLACK_BOT_TOKEN");
+    await ended;
+    const text = events.filter((e) => e.type === "text").map((e) => (e as { text: string }).text).join("");
+    assert.match(text, /env=<unset>/);
+    await session.dispose();
+  } finally {
+    delete process.env.SLACK_BOT_TOKEN;
+  }
 });

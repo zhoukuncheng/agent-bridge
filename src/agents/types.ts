@@ -62,3 +62,6 @@ export class Emitter {
 export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
+
+/** The bridge's own secrets: agents run arbitrary commands, so they never inherit these. */
+export const bridgeSecretEnv = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"] as const;

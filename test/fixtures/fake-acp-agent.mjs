@@ -31,6 +31,8 @@ async function prompt(id, { sessionId, prompt }) {
     update(sessionId, { sessionUpdate: "tool_call", toolCallId: "tc1", title: "$ echo hi", kind: "execute", status: "pending", rawInput: { command: "echo hi" } });
     update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "tc1", status: "completed", rawOutput: { content: [{ type: "text", text: `hi (${decision.outcome.optionId})` }] } });
   }
+  const envName = text.match(/^ENV (\w+)/)?.[1];
+  if (envName) update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `env=${process.env[envName] ?? "<unset>"} ` } });
   update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "echo: " } });
   update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
   update(sessionId, { sessionUpdate: "usage_update", used: 10, size: 100, cost: { amount: 0.01, currency: "USD" } });
