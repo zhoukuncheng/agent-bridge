@@ -1,0 +1,25 @@
+{
+  "name": "agent-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@botiverse/oar": "0.118.0",
+    "@slack/bolt": "5.1.0",
+    "@slack/web-api": "8.4.0",
+    "croner": "11.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc -p .",
+    "test": "node --test --test-timeout=30000 'test/**/*.test.ts'",
+    "e2e": "node scripts/e2e.ts"
+  }
+}

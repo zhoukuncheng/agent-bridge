@@ -1,0 +1,21 @@
+# ~/.config/systemd/user/agent-bridge.service
+[Unit]
+Description=agent-bridge: coding agents in Slack threads
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/code/agent-bridge
+# Tokens: SLACK_BOT_TOKEN=xoxb-..., SLACK_APP_TOKEN=xapp-... (file mode 0600)
+EnvironmentFile=%h/.config/agent-bridge/env
+# OAR needs Node 24+; pin the binary instead of relying on the login shell's nvm default.
+ExecStart=%h/.nvm/versions/node/v24.22.1/bin/node src/main.ts
+Restart=on-failure
+RestartSec=5
+# Agents (and what they run) live in this cgroup; cap it so a runaway build cannot take the desktop down.
+MemoryMax=16G
+MemorySwapMax=0
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

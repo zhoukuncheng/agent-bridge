@@ -1,0 +1,16 @@
+{
+  "ownerUserId": "YOUR_SLACK_USER_ID",
+  "allowUsers": ["YOUR_SLACK_USER_ID"],
+  "allowChannels": [],
+  "defaultAgent": "claude",
+  "defaultCwd": "~/code",
+  "channelCwd": {},
+  "agents": {
+    "claude": { "kind": "oar", "runtime": "claude" },
+    "omp": { "kind": "acp", "command": "~/.local/bin/omp", "args": ["acp"] }
+  },
+  "idleMinutes": 30,
+  "maxLiveSessions": 4,
+  "runTimeoutMinutes": 60,
+  "dbPath": "~/.local/share/agent-bridge/bridge.db"
+}
