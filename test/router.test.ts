@@ -99,6 +99,41 @@ test("messages during a turn are queued; !stop aborts", async () => {
   assert.match(slack.posts(root.ts).at(-1)!.text, /nothing is running/);
 });
 
+test("!stop makes a channel thread mention-only; mentions and commands still reach it", async () => {
+  const { bridge, slack, drivers, msg } = setup();
+  const root = msg(`<@${BOT}> first`);
+  await bridge.router.handle(root);
+  await waitFor(() => slack.calls.filter((c) => c.method === "stopStream").length === 1);
+  await bridge.router.handle(msg("!stop", { threadTs: root.ts }));
+  assert.match(slack.posts(root.ts).at(-1)!.text, /nothing is running.*only answer here when mentioned/);
+  assert.equal(bridge.store.getThread("C1", root.ts)!.mention_only, 1);
+
+  const chatter = msg("<@UCOLLEAGUE> talking to a colleague", { threadTs: root.ts });
+  await bridge.router.handle(chatter);
+  assert.deepEqual(drivers.claude.sessions[0]!.inputs, ["first"]);
+  // Not claimed, so nothing is lost if the thread is unmuted later.
+  assert.equal(bridge.store.claimMessage("C1", chatter.ts), true);
+
+  await bridge.router.handle(msg("!status", { threadTs: root.ts }));
+  assert.match(slack.posts(root.ts).at(-1)!.text, /mention-only/);
+  await bridge.router.handle(msg(`<@${BOT}> second`, { threadTs: root.ts }));
+  await waitFor(() => slack.calls.filter((c) => c.method === "stopStream").length === 2);
+  assert.equal(drivers.claude.sessions.length, 1);
+  assert.deepEqual(drivers.claude.sessions[0]!.inputs, ["first", "second"]);
+});
+
+test("!stop in a DM thread only interrupts", async () => {
+  const { bridge, slack, drivers, msg } = setup();
+  const root = msg("first", { channel: "D1", channelType: "im" });
+  await bridge.router.handle(root);
+  await waitFor(() => slack.calls.filter((c) => c.method === "stopStream").length === 1);
+  await bridge.router.handle(msg("!stop", { channel: "D1", channelType: "im", threadTs: root.ts }));
+  assert.equal(slack.posts(root.ts).at(-1)!.text, "nothing is running in this thread");
+  assert.equal(bridge.store.getThread("D1", root.ts)!.mention_only, 0);
+  await bridge.router.handle(msg("next", { channel: "D1", channelType: "im", threadTs: root.ts }));
+  await waitFor(() => drivers.claude.sessions[0]!.inputs.length === 2);
+});
+
 test("a released or evicted session is resumed from the stored id", async () => {
   const { bridge, slack, drivers, msg } = setup({ maxLiveSessions: 1 });
   const a = msg(`<@${BOT}> one`);

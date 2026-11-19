@@ -184,7 +184,7 @@ export const helpText = [
   '• `!cron add "0 9 * * 1-5" [--name N] [--agent A] [--channel here|dm|#chan] [--mode fresh|continue] [--tz Asia/Shanghai] [--timeout MIN] [--silent] [--exec] <prompt or shell command>`',
   "  `--silent` posts only the final answer; `--exec` runs the text with `sh -c` and posts its output.",
   "• `!cron list` · `!cron run <id>` · `!cron pause <id>` · `!cron resume <id>` · `!cron rm <id>`",
-  "• In a session thread: `!stop` interrupts the turn · `!status` · `!release` frees the process (the next reply resumes) · `!verbose` / `!concise` switch how tool calls are shown.",
+  "• In a session thread: `!stop` interrupts the turn and, in a channel, stops answering replies that don't mention me · `!status` · `!release` frees the process (the next reply resumes) · `!verbose` / `!concise` switch how tool calls are shown.",
   "• 🔒 Sessions started in a thread with other people's messages are read-only. `!trust [prompt]` gives the agent full tools.",
   "• Attach files to a message and the agent gets them as local paths.",
 ].join("\n");
