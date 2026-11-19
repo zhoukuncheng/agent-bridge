@@ -173,7 +173,7 @@ Works in private chats with the owner, as well as groups and forum topics (where
 
 - Per-topic provider/model/reasoning selections and shared `/cron` settings are persisted in SQLite across restarts.
 - Replies use `sendRichMessage` (Markdown or HTML) with automatic chunked plain-text fallback (`sendMessage`).
-- Agent and shell processes run with [`deploy/telegram-bin`](deploy/telegram-bin) prepended to `PATH`, providing a lightweight attachment sender (`cc-connect send --file <path> --image <path>`) that uploads files directly to the active chat/topic.
+- Agent and shell processes run with [`deploy/telegram-bin`](deploy/telegram-bin) prepended to `PATH`, providing a lightweight helper for uploading files and images directly to the active chat or topic.
 
 ## Configuration Reference
 
@@ -228,7 +228,7 @@ By default, configuration is loaded from `~/.config/agent-bridge/config.json` (o
   - Under the default `untrustedContext: "restrict"`, even an allowed user's session started inside a thread containing messages from non-`allowUsers` starts read-only until `!trust` is issued. Earlier thread messages are always passed as quoted context with angle brackets escaped and instructions not to follow them.
 - **Secret Protection & Outbound Redaction**
   - Bridge tokens (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `TELEGRAM_BOT_TOKEN`) are stripped from agent subprocess environments.
-  - Claude's `Read` and `Edit` tools are denied `secretPaths` (by default: `~/.config/agent-bridge/**`, `~/.cc-connect/config.toml`, `~/.ssh/**`, `~/.aws/**`, `~/.config/gh/hosts.yml`, `~/.netrc`, `~/.git-credentials`, `/proc/*/environ`).
+  - Claude's `Read` and `Edit` tools are denied `secretPaths` (by default covering sensitive credential paths such as `~/.config/agent-bridge/**`, `~/.ssh/**`, `~/.aws/**`, `~/.config/gh/hosts.yml`, `~/.netrc`, `~/.git-credentials`, and `/proc/*/environ`; see [`src/config.ts`](src/config.ts) for the full default list).
   - All outbound content (messages, Slack stream chunks, task cards, and Telegram replies/errors) passes through `Redactor`, which masks common credential patterns (Slack, AWS, GitHub, GitLab, `sk-...`, Google, npm, JWT, private keys), `password=...`-style assignments, and exact values of secret-looking environment variables. Slack streaming flushes on whitespace boundaries so tokens are not split across chunks.
   - **Important caveat:** Full-tool agent sessions run as your local OS user and can read files via shell commands. Outbound redaction helps prevent accidental leakage into chat, but it is **not** an OS-level sandbox.
 - **ACP Permissions**
@@ -241,36 +241,6 @@ By default, configuration is loaded from `~/.config/agent-bridge/config.json` (o
 - **Missed-message backfill (Slack):** Because Socket Mode can drop events, the bridge scans the owner's DM and recently active threads on startup (up to `backfillMinutes`), on reconnect, and every 2 minutes. Messages are claimed in SQLite before dispatch so each event is handled at most once. Mentions in channel messages outside existing bridge threads are not backfilled.
 - **Schedules:** Overlapping firings of the same schedule are skipped while a previous run is still active. Missed firings within `cronCatchUpHours` follow `cronCatchUp` (`run`, `notify`, or `off`). Failed firings notify the owner via DM.
 - **Per-agent memory caps (Linux):** When `agentMemoryMax` is set and `systemd-run --user --scope` is available, each agent process runs inside its own memory-capped scope with swap disabled (`MemorySwapMax=0`), isolating OOM kills from the bridge itself.
-
-## Migrating Schedules from `cc-connect`
-
-If you are migrating existing cron jobs from `cc-connect`, stop `agent-bridge` first and run the idempotent importer:
-
-```sh
-# Slack jobs (preview, then import)
-node scripts/migrate-cc-connect.ts --dry-run
-node scripts/migrate-cc-connect.ts
-
-# Telegram jobs
-node scripts/migrate-cc-connect.ts \
-  --platform telegram \
-  --agent codex \
-  --cwd /path/to/workspace \
-  --timezone Etc/UTC
-```
-
-| `cc-connect` Field | `agent-bridge` Mapping |
-| --- | --- |
-| `<platform>:<channel>:<user>` session key | Target channel/chat and owner |
-| `description` | Schedule name |
-| `exec` | `--exec` shell schedule |
-| `silent` / `mute` | `silent` |
-| `session_mode: new_per_run` | `fresh` |
-| `session_mode: reuse` (default) | `continue` |
-| `timeout_mins` | Schedule timeout (default `30`) |
-| `enabled: false` | Paused schedule |
-
-Re-running the importer skips previously imported jobs (tracked by origin ID). Because `cc-connect` keys sessions per chat rather than per thread, historical chat sessions are not imported.
 
 ## Development & Testing
 
@@ -318,7 +288,13 @@ src/
                      provider integration, per-topic/cron preferences, and scheduler service
   sched/             Cron scheduler (croner, catch-up) and shell exec runner
   security/          Outbound secret redactor
-scripts/             Migration helper, Bun smoke test, and Slack/Telegram E2E scripts
+scripts/             Utility scripts, Bun smoke test, and Slack/Telegram E2E scripts
 deploy/              Example config, systemd service templates, and Telegram attachment helper
 test/                Node test suite and ACP test fixtures
 ```
+
+## References
+
+- **[OAR (`@botiverse/oar`)](https://github.com/botiverse/oar)** — Open Agent Runtime, providing a unified programmatic interface across coding agent harnesses (Claude Code, Codex, Antigravity, Pi, and more).
+- **[cc-connect](https://github.com/chenhg5/cc-connect)** — Open-source bridge connecting local AI coding agents to Slack, Telegram, and other messaging platforms.
+- **[Agent Client Protocol (ACP)](https://agentclientprotocol.com)** — Protocol implemented by the built-in ACP client for ACP-compatible agents such as `omp`.
