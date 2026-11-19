@@ -23,7 +23,7 @@ The first version supports **Claude Code**, **omp** (Oh My Pi) and **Antigravity
 | You do | The bridge does |
 |---|---|
 | Mention the bot in a channel, or DM it | Starts a session (default agent). It posts a header in the thread, then streams the answer |
-| Mention the bot inside someone else's thread | Starts a session there and gives the agent the thread's earlier messages first. If anyone other than `allowUsers` wrote in the thread, the session starts 🔒 read-only (see Security) |
+| Mention the bot inside someone else's thread | Starts a session there with full tools and gives the agent the thread's earlier messages first, as quoted information. With `untrustedContext: "restrict"` the session starts 🔒 read-only instead when anyone outside `allowUsers` wrote in the thread (see Security) |
 | Reply in that thread (no mention needed) | Continues the same session. A reply sent while a turn is running is steered into it (Claude) or queued (omp) |
 | Attach files to the message | Downloads them to `filesDir/<channel>-<thread>/` and gives the agent their local paths |
 | `!chat` / `!new` `--agent omp [--model M] [--cwd DIR] <prompt>` | Starts a session with a specific agent, model or working directory |
@@ -96,10 +96,12 @@ The first version supports **Claude Code**, **omp** (Oh My Pi) and **Antigravity
   - it runs in `--permission-mode dontAsk` and may use only Read, Grep and Glob;
   - Bash, writing and editing tools, agent-spawning tools, scheduling tools and messaging tools are denied outright. This matters because Claude would otherwise auto-approve "read-only" shell commands such as `cat`.
 
-  A session becomes read-only when it starts in a thread where someone outside `allowUsers`
-  has written (`untrustedContext: "restrict"`), or when a guest starts it. That thread's
-  messages are passed as quoted information with angle brackets escaped, and the agent is
-  told not to follow them.
+  A guest's session is always read-only. An allowed user's session in a thread where
+  someone outside `allowUsers` has written gets full tools by default
+  (`untrustedContext: "allow"`). Set `untrustedContext: "restrict"` to make those sessions
+  read-only until `!trust`. If you switch back to `"allow"`, threads locked earlier unlock
+  on their next owner message. Either way, the thread's messages are passed as quoted
+  information with angle brackets escaped, and the agent is told not to follow them.
 - **Secrets.**
   - Agent processes do not inherit `SLACK_BOT_TOKEN` or `SLACK_APP_TOKEN`.
   - Claude's Read and Edit tools are denied the `secretPaths`: the bridge's env file, cc-connect's config, `~/.ssh`, `~/.aws`, gh hosts, `.netrc`, `.git-credentials` and `/proc/*/environ`.
