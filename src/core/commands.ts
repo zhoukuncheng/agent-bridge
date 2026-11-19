@@ -1,4 +1,4 @@
-// Text commands. The Slack bot app has no slash commands, so everything is a message
+// Text commands. The Slack app has no slash commands, so everything is a message
 // starting with "!". Plain text with no command starts (or continues) a chat.
 
 export interface RunOptions {

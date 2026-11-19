@@ -6,7 +6,7 @@
 // labelled seed, the bridge drives real claude/omp sessions, and the checks read the
 // thread back through conversations.replies.
 //
-// Usage: scripts/with-slack-env.sh node scripts/e2e.ts [--channel YOUR_SLACK_CHANNEL_ID] [--owner YOUR_SLACK_USER_ID] [--only name,name]
+// Usage: scripts/with-slack-env.sh node scripts/e2e.ts --channel CHANNEL_ID --owner USER_ID [--only name,name]
 import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -21,16 +21,19 @@ import { Store } from "../src/store.ts";
 
 const { values } = parseArgs({
   options: {
-    channel: { type: "string", default: "YOUR_SLACK_CHANNEL_ID" },
-    owner: { type: "string", default: "YOUR_SLACK_USER_ID" },
+    channel: { type: "string" },
+    owner: { type: "string" },
     only: { type: "string" },
     "claude-model": { type: "string", default: "claude-haiku-5-5" },
     "omp-model": { type: "string" },
     "agy-model": { type: "string" },
   },
 });
-const CHANNEL = values.channel!;
-const OWNER = values.owner!;
+if (!values.channel?.trim() || !values.owner?.trim()) {
+  throw new Error("Slack E2E requires both --channel CHANNEL_ID and --owner USER_ID");
+}
+const CHANNEL = values.channel.trim();
+const OWNER = values.owner.trim();
 const only = values.only ? new Set(values.only.split(",")) : undefined;
 
 const token = process.env.SLACK_BOT_TOKEN;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run a command with the Slack bot bot credentials from the cc-connect config in the environment.
+# Run a command with the Slack bot credentials from the cc-connect config in the environment.
 set -euo pipefail
 eval "$(python3 - <<'PY'
 import tomllib, os, shlex

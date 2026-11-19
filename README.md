@@ -167,7 +167,7 @@ as long as that file stays.
 ```sh
 npm run typecheck
 npm test              # unit tests: fake Slack, fake agents, a scripted ACP agent (~2 s)
-scripts/with-slack-env.sh npm run e2e   # real Slack + real claude/omp, see below
+scripts/with-slack-env.sh npm run e2e -- --channel "$SLACK_CHANNEL_ID" --owner "$SLACK_USER_ID"   # real Slack + real claude/omp, see below
 ```
 
 `scripts/e2e.ts` runs against real Slack and real agents. It covers:
