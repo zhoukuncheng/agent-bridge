@@ -1,4 +1,4 @@
-// Sends two short messages to the configured owner using the production bot and Codex.
+// Sends two short messages to the configured owner using the production bot and its configured OAR provider.
 // Keeps test runs, schedules and conversations in a temporary in-memory store.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";

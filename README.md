@@ -198,13 +198,13 @@ src/security/  redact.ts (outbound redaction)
 src/store.ts   node:sqlite
 ```
 
-## Telegram with Codex
+## Telegram with OAR (Codex and Antigravity)
 
 Use the Telegram entry point `src/telegram/main.ts` with Bun or Node 24+.
-It loads the SQLite store, Croner and the Telegram HTTP client. The Slack Bolt,
-OAR and ACP runtimes stay outside this process. Codex runs once per turn using
-`codex exec --json`. The native thread ID is stored by chat and topic for
-`exec resume`; the child exits between turns. Codex must already be signed in.
+The bridge imports the selected OAR runtime on demand. Each turn owns a Codex
+app-server or an Antigravity ACP session, disposed after the turn. SQLite keeps
+native conversation IDs per chat, topic and provider. Existing CLI thread IDs
+resume when the provider matches. The selected CLI must already be signed in.
 
 Set `AGENT_BRIDGE_CONFIG` to a private JSON file and `AGENT_BRIDGE_TOKEN_FILE`
 to a mode-0600 file containing the Telegram token. Use a dedicated database:
@@ -219,7 +219,15 @@ to a mode-0600 file containing the Telegram token. Use a dedicated database:
 }
 ```
 
-Only the numeric owner can invoke Codex. Private chats, forum topics, group
+Set `telegram.agent` to `codex` (default) or `antigravity` (`agy` is accepted).
+The configured model and effort apply to that default provider. Optional
+`telegram.providers.codex` and `telegram.providers.antigravity` objects can
+set `model` and `effort` for each provider, including scheduled runs. Codex inherits
+its native sandbox settings unless full access is requested. OAR's Antigravity
+ACP implementation auto-approves tool requests, so this bridge requires
+explicit `telegram.fullAccess: true` to use it.
+
+Only the numeric owner can invoke agents. Private chats, forum topics, group
 mentions, replies to the bot and slash commands are supported. The bot receives
 only messages Telegram delivers under the group's privacy settings. Use
 `/new`, `/ask`, `/html`, `/stop`, or `/cron`. Rich Markdown and HTML replies use
@@ -227,7 +235,18 @@ only messages Telegram delivers under the group's privacy settings. Use
 generation drafts. Messages from bots, anonymous administrators and channels
 are ignored. Agent processes receive an attachment sender on PATH compatible
 with `cc-connect send --file` and `--image`. Set fullAccess only for an owner
-who needs the local Codex unrestricted execution mode.
+who needs unrestricted tool execution.
+
+Use the following commands in a DM or addressed to the bot in a group:
+
+| Command | Behaviour |
+| --- | --- |
+| `/provider`, `/provider codex`, `/provider antigravity` | Show or switch the backend for this topic. Switching back resumes its own history. |
+| `/model`, `/model MODEL_ID` | List live OAR model IDs or select one. |
+| `/reasoning`, `/reasoning LEVEL` | List the selected model’s supported effort levels or set one. |
+| `/new` | Clear this provider’s conversation in the current topic. |
+
+Selections survive restarts. A cron uses the provider and model in its schedule. Its execution is independent of interactive settings.
 
 Import while stopped using the original scheduler's timezone:
 
@@ -241,4 +260,4 @@ mode, expression, timezone and prompt before cutting over. A sample Linux unit
 is in `deploy/agent-bridge-telegram.service`. Stop the previous poller before
 starting this one. To test the real API without polling or running production jobs,
 `bun --smol scripts/telegram-e2e.ts` dispatches a synthetic owner message,
-resumes its real Codex conversation and checks two real Telegram receipts.
+resumes its real provider conversation and checks two real Telegram receipts.

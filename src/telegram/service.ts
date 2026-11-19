@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { runCodex } from "../agents/codex.ts";
+import { defaults, providerId, providerReply, type Selection } from "./providers.ts";
+import { selectionFor, threadKey } from "./preferences.ts";
 import { expandHome, type Config } from "../config.ts";
 import { runShell } from "../sched/exec.ts";
 import { ScheduleTimer } from "../sched/scheduler.ts";
@@ -28,22 +29,27 @@ export class TelegramService extends ScheduleTimer {
   }
 
   async turn(target: Target, thread: string, prompt: string, opts: {
-    cwd?: string; timeout: number; resume: boolean; signal?: AbortSignal; schedule?: number; format?: Format;
+    cwd?: string; timeout: number; resume: boolean; signal?: AbortSignal; schedule?: number; format?: Format; selection?: Selection;
   }) {
     const cfg = this.config.telegram!;
     const cwd = expandHome(opts.cwd ?? this.config.defaultCwd);
-    const id = this.store.startRun(opts.schedule ?? null, target.chat_id, thread, "codex");
+    const selected = opts.selection ?? selectionFor(this.store, cfg, target.chat_id, thread);
+    const key = threadKey(thread, selected.provider);
+    const id = this.store.startRun(opts.schedule ?? null, target.chat_id, key, selected.provider);
     const signals = opts.signal ? [opts.signal] : [];
     if (opts.timeout > 0) signals.push(AbortSignal.timeout(opts.timeout * 60_000));
     try {
-      const result = await runCodex(prompt, { cwd, model: cfg.model, effort: cfg.effort, fullAccess: cfg.fullAccess,
-        resume: opts.resume ? this.store.getThread(target.chat_id, thread)?.session_id : undefined,
-        signal: AbortSignal.any(signals), env: deliveryEnv(target) });
-      this.store.upsertThread({ channel: target.chat_id, thread_ts: thread, agent: "codex", session_id: result.sessionId, cwd, model: cfg.model, kind: opts.schedule ? "cron" : "chat" });
+      const previous = this.store.getThread(target.chat_id, key) ?? this.store.getThread(target.chat_id, thread);
+      const resume = opts.resume && previous && (previous.agent === selected.provider ||
+        (previous.agent === "agy" && selected.provider === "antigravity")) ? previous.session_id : undefined;
+      const result = await providerReply(selected, prompt, { cwd, resume, env: deliveryEnv(target),
+        fullAccess: cfg.fullAccess, signal: AbortSignal.any(signals) });
+      this.store.upsertThread({ channel: target.chat_id, thread_ts: key, agent: selected.provider,
+        session_id: result.sessionId, cwd, model: result.model, kind: opts.schedule ? "cron" : "chat" });
       await this.bot.send(target, result.answer, opts.format);
       this.store.finishRun(id, "completed");
     } catch (err) {
-      this.store.finishRun(id, "failed", (err as Error).message);
+      this.store.finishRun(id, signals.some(signal => signal.aborted) ? "aborted" : "failed", (err as Error).message);
       throw err;
     }
   }
@@ -52,7 +58,9 @@ export class TelegramService extends ScheduleTimer {
     const target = { chat_id: row.channel };
     if (!row.exec) {
       if (!row.silent) await this.bot.send(target, `⏰ ${row.name ?? row.id}`);
-      return this.turn(target, "cron:" + row.id, row.prompt, { cwd: row.cwd, timeout, resume: row.mode === "continue", schedule: row.id });
+      const selection = defaults(this.config.telegram!, providerId(row.agent));
+      if (row.model) selection.model = row.model;
+      return this.turn(target, "cron:" + row.id, row.prompt, { cwd: row.cwd, timeout, resume: row.mode === "continue", schedule: row.id, selection });
     }
     const run = this.store.startRun(row.id, row.channel, "", "exec");
     try {

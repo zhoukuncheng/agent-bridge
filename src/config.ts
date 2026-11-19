@@ -7,7 +7,13 @@ import type { OarAgentConfig } from "./agents/oar.ts";
 export type AgentConfig = ({ kind: "oar" } & OarAgentConfig) | ({ kind: "acp" } & AcpAgentConfig);
 
 export interface Config {
-  telegram?: { model: string; effort: string; fullAccess?: boolean };
+  telegram?: {
+    agent?: "codex" | "agy" | "antigravity";
+    model?: string;
+    effort?: string;
+    fullAccess?: boolean;
+    providers?: Partial<Record<"codex" | "antigravity", { model?: string; effort?: string }>>;
+  };
   /** Slack user who owns the bridge; `--channel dm` and DMs resolve to this user. */
   ownerUserId: string;
   /** Users with full access. Defaults to the owner. */
