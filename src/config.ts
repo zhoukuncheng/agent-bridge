@@ -45,8 +45,8 @@ export interface Config {
   stallAbortMinutes: number;
   /**
    * When an allowed user mentions the bot in a thread where other people wrote:
-   * "allow" (default) gives the session full tools; "restrict" makes it read-only until !trust.
-   * Guests' sessions are always restricted either way.
+   * "restrict" (default) makes the session read-only until !trust; "allow" gives it full tools,
+   * trading prompt-injection exposure for convenience. Guests' sessions are always restricted.
    */
   untrustedContext: "restrict" | "allow";
   /** Agent that runs restricted sessions; it must be an OAR Claude agent. */
@@ -91,7 +91,7 @@ export const defaultConfig: Config = {
   display: "concise",
   stallMinutes: 10,
   stallAbortMinutes: 0,
-  untrustedContext: "allow",
+  untrustedContext: "restrict",
   restrictedAgent: "claude",
   secretPaths: [
     "~/.config/agent-bridge/**",
