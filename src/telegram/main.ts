@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { forgetSession, selectionFor, changeSelection } from "./preferences.ts";
+import { cronSelection, cronUsage, describeCronSelection, setCronSelection, forgetSession, selectionFor, changeSelection } from "./preferences.ts";
 import { defaults } from "./providers.ts";
 import { loadConfig, expandHome } from "../config.ts";
 import { Store } from "../store.ts";
@@ -15,6 +15,7 @@ const store = new Store(expandHome(config.dbPath));
 const scheduler = new TelegramService(config, store, bot);
 const drafts = new Map<number, AbortController>();
 const shutdown = new AbortController();
+let updatingCron = false;
 const configuring = new Set<string>();
 const active = new Map<string, AbortController>();
 for (const sig of ["SIGTERM", "SIGINT"]) process.once(sig, () => {
@@ -30,7 +31,24 @@ async function handle(message: TelegramMessage) {
   const key = target.chat_id + ":" + topic;
   const send = (s: string) => bot.send(target, s);
   if (command === "start" || command === "help") return send("直接发消息给当前 agent。/provider 选择后端 · /model 选择模型 · /reasoning 选择推理档位。群内请 @ 我或回复我。/new 新会话 · /stop 停止 · /cron 查看任务 · /html 以 HTML 回答");
-  if (command === "cron") return send(store.listSchedules().map(r => `#${r.id} ${r.name} · ${r.cron} · ${r.tz ?? "local"} · ${scheduler.nextRun(r.id)?.toISOString() ?? "paused"}`).join("\n") || "没有任务");
+  if (command === "cron") {
+    if (!text || text === "list") {
+      const rows = store.listSchedules().map(r => `#${r.id} ${r.name} · ${r.cron} · ${r.tz ?? "local"} · ${scheduler.nextRun(r.id)?.toISOString() ?? "paused"}`);
+      return send([describeCronSelection(cronSelection(store, config.telegram!)), cronUsage, ...rows].join("\n"));
+    }
+    if (updatingCron) return send("正在更新定时任务设置，请稍后重试。");
+    updatingCron = true;
+    let reply: string;
+    try {
+      const selection = await setCronSelection(store, config.telegram!, expandHome(config.defaultCwd), text);
+      reply = describeCronSelection(selection) + "。从下一次启动的 AI 任务生效。";
+    } catch (err) {
+      reply = (err as Error).message;
+    } finally {
+      updatingCron = false;
+    }
+    return send(reply);
+  }
   if (command === "stop") {
     active.get(key)?.abort();
     return send("已处理停止请求。");
@@ -90,7 +108,7 @@ store.db.prepare("UPDATE runs SET ended_at=?, outcome='interrupted' WHERE ended_
 const commands = [
   ["help", "使用说明"], ["ask", "向当前 agent 提问"], ["new", "开启当前 provider 的新会话"],
   ["provider", "查看或切换 provider"], ["model", "查看或切换模型"], ["reasoning", "查看或切换推理档位"],
-  ["html", "使用 HTML 富文本回答"], ["stop", "停止当前会话"], ["cron", "查看定时任务及下次执行时间"],
+  ["html", "使用 HTML 富文本回答"], ["stop", "停止当前会话"], ["cron", "查看定时任务、统一设置 provider 和模型"],
 ].map(([command, description]) => ({ command, description }));
 for (const scope of [{ type: "default" }, { type: "chat", chat_id: config.ownerUserId }]) {
   await bot.call("setMyCommands", { scope, commands }).catch(err => console.error("Telegram menu:", err.message));

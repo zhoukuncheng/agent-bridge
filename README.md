@@ -246,7 +246,11 @@ Use the following commands in a DM or addressed to the bot in a group:
 | `/reasoning`, `/reasoning LEVEL` | List the selected model’s supported effort levels or set one. |
 | `/new` | Clear this provider’s conversation in the current topic. |
 
-Selections survive restarts. A cron uses the provider and model in its schedule. Its execution is independent of interactive settings.
+Selections survive restarts. `/cron` shows the shared Telegram schedule settings. Use
+`/cron set <provider> <model> [reasoning]` once for all current and future agent schedules.
+Values are validated against the live model catalog before saving. Without a saved
+selection, schedules use the configured Telegram defaults. Each new firing reads
+the shared settings. Chat selections stay topic-specific, and shell jobs run directly.
 
 Import while stopped using the original scheduler's timezone:
 

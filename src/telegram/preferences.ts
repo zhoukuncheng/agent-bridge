@@ -49,3 +49,29 @@ export function forgetSession(store: Store, chat: string, topic: string, provide
   store.db.prepare("DELETE FROM threads WHERE channel=? AND (thread_ts=? OR (thread_ts=? AND agent IN (?,?)))")
     .run(chat, threadKey(topic, provider), topic, provider, provider === "antigravity" ? "agy" : provider);
 }
+
+const cronKey = "telegram:cron:selection";
+export const cronUsage = "/cron set <provider> <model> [reasoning]";
+
+export function cronSelection(store: Store, config: TelegramConfig): Selection {
+  const saved = store.getMeta(cronKey);
+  return saved ? JSON.parse(saved) : defaults(config);
+}
+
+export async function setCronSelection(store: Store, config: TelegramConfig, cwd: string, input: string, catalog = modelCatalog): Promise<Selection> {
+  const [action, backend, model, requestedEffort, ...extra] = input.trim().split(/\s+/);
+  if (action !== "set" || !backend || !model || extra.length) throw new Error(cronUsage);
+  const provider = providerId(backend.toLowerCase());
+  const models = await catalog(provider, cwd, config.fullAccess);
+  const entry = models.find(m => m.id === model);
+  if (!entry) throw new Error(`${provider} 可选模型：${models.map(m => m.id).join("、")}`);
+  const levels = entry.effortLevels ?? [];
+  if (requestedEffort && !levels.includes(requestedEffort)) throw new Error(`${model} 可选推理档位：${levels.join("、") || "仅原生默认"}`);
+  const selection = { provider, model, effort: requestedEffort ?? entry.defaultEffort };
+  store.setMeta(cronKey, JSON.stringify(selection));
+  return selection;
+}
+
+export function describeCronSelection(s: Selection) {
+  return `定时任务统一设置：${s.provider} · ${s.model ?? "原生默认模型"} · ${s.effort ?? "原生默认推理档位"}`;
+}
