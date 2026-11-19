@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { defaults, providerId, providerReply, type Selection } from "./providers.ts";
-import { selectionFor, threadKey } from "./preferences.ts";
+import { providerReply, type Selection } from "./providers.ts";
+import { cronSelection, selectionFor, threadKey } from "./preferences.ts";
 import { expandHome, type Config } from "../config.ts";
 import { runShell } from "../sched/exec.ts";
 import { ScheduleTimer } from "../sched/scheduler.ts";
@@ -58,8 +58,7 @@ export class TelegramService extends ScheduleTimer {
     const target = { chat_id: row.channel };
     if (!row.exec) {
       if (!row.silent) await this.bot.send(target, `⏰ ${row.name ?? row.id}`);
-      const selection = defaults(this.config.telegram!, providerId(row.agent));
-      if (row.model) selection.model = row.model;
+      const selection = cronSelection(this.store, this.config.telegram!);
       return this.turn(target, "cron:" + row.id, row.prompt, { cwd: row.cwd, timeout, resume: row.mode === "continue", schedule: row.id, selection });
     }
     const run = this.store.startRun(row.id, row.channel, "", "exec");
