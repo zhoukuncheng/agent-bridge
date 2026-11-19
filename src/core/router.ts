@@ -235,6 +235,8 @@ export class Router {
       await this.reply(target.channel, target.threadTs, "⚠️ this session belongs to someone else; mention me in a new message to start your own");
       return;
     }
+    // Read-only only because of other people's messages (level 1), and that policy is off now: lift it.
+    if (stored?.restricted === 1 && trusted && config.untrustedContext === "allow") await manager.trust(target.channel, target.threadTs);
 
     let input = prompt;
     let restricted = !trusted;

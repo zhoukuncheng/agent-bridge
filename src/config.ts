@@ -44,8 +44,9 @@ export interface Config {
   /** Abort a turn that has produced nothing for this long. 0 (default) never aborts. */
   stallAbortMinutes: number;
   /**
-   * Sessions started in a thread with other people's messages run restricted until the
-   * owner replies !trust. "allow" gives them full tools from the start.
+   * When an allowed user mentions the bot in a thread where other people wrote:
+   * "allow" (default) gives the session full tools; "restrict" makes it read-only until !trust.
+   * Guests' sessions are always restricted either way.
    */
   untrustedContext: "restrict" | "allow";
   /** Agent that runs restricted sessions; it must be an OAR Claude agent. */
@@ -90,7 +91,7 @@ export const defaultConfig: Config = {
   display: "concise",
   stallMinutes: 10,
   stallAbortMinutes: 0,
-  untrustedContext: "restrict",
+  untrustedContext: "allow",
   restrictedAgent: "claude",
   secretPaths: [
     "~/.config/agent-bridge/**",
