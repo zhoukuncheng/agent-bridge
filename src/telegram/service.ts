@@ -6,6 +6,15 @@ import { ScheduleTimer } from "../sched/scheduler.ts";
 import { Store, type ScheduleRow } from "../store.ts";
 import { type Format, Telegram, type Target } from "./api.ts";
 
+function deliveryEnv(target: Target) {
+  const bin = fileURLToPath(new URL("../../deploy/telegram-bin", import.meta.url));
+  return {
+    PATH: bin + ":" + process.env.PATH,
+    BRIDGE_CHAT_ID: target.chat_id,
+    BRIDGE_TOPIC: String(target.message_thread_id ?? ""),
+  };
+}
+
 export class TelegramService extends ScheduleTimer {
   private config: Config;
   private bot: Pick<Telegram, "send">;
@@ -24,14 +33,12 @@ export class TelegramService extends ScheduleTimer {
     const cfg = this.config.telegram!;
     const cwd = expandHome(opts.cwd ?? this.config.defaultCwd);
     const id = this.store.startRun(opts.schedule ?? null, target.chat_id, thread, "codex");
-    const bin = fileURLToPath(new URL("../../deploy/telegram-bin", import.meta.url));
-    const env = { PATH: bin + ":" + process.env.PATH, BRIDGE_CHAT_ID: target.chat_id, BRIDGE_TOPIC: String(target.message_thread_id ?? "") };
     const signals = opts.signal ? [opts.signal] : [];
     if (opts.timeout > 0) signals.push(AbortSignal.timeout(opts.timeout * 60_000));
     try {
       const result = await runCodex(prompt, { cwd, model: cfg.model, effort: cfg.effort, fullAccess: cfg.fullAccess,
         resume: opts.resume ? this.store.getThread(target.chat_id, thread)?.session_id : undefined,
-        signal: AbortSignal.any(signals), env });
+        signal: AbortSignal.any(signals), env: deliveryEnv(target) });
       this.store.upsertThread({ channel: target.chat_id, thread_ts: thread, agent: "codex", session_id: result.sessionId, cwd, model: cfg.model, kind: opts.schedule ? "cron" : "chat" });
       await this.bot.send(target, result.answer, opts.format);
       this.store.finishRun(id, "completed");
@@ -49,7 +56,7 @@ export class TelegramService extends ScheduleTimer {
     }
     const run = this.store.startRun(row.id, row.channel, "", "exec");
     try {
-      const result = await runShell(row.prompt, row.cwd, timeout);
+      const result = await runShell(row.prompt, row.cwd, timeout, deliveryEnv(target));
       if (result.timedOut || result.code !== 0) throw new Error(`exit ${result.code}: ${result.output.slice(-2000)}`);
       await this.bot.send(target, result.output.trim() || "完成");
       this.store.finishRun(run, "completed");

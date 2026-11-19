@@ -8,8 +8,8 @@ export interface ExecResult {
 }
 
 /** Runs a shell command the way cc-connect's exec cron did: `sh -c` in the work dir, stdout+stderr together. */
-export function runShell(command: string, cwd: string, timeoutMinutes: number): Promise<ExecResult> {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+export function runShell(command: string, cwd: string, timeoutMinutes: number, extraEnv?: NodeJS.ProcessEnv): Promise<ExecResult> {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
   for (const name of bridgeSecretEnv) delete env[name];
   return new Promise((resolve) => {
     const child = spawn("sh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });

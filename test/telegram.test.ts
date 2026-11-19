@@ -40,14 +40,38 @@ test("a migrated silent exec posts its result and keeps the cron run history", a
   });
   try {
     const row = store.addSchedule({ agent: "codex", channel: "123", created_by: "123", cwd: "/tmp", mode: "fresh",
-      exec: true, silent: true, cron: "0 0 * * *", timeout_min: 0, prompt: "printf cron-ok" });
+      exec: true, silent: true, cron: "0 0 * * *", timeout_min: 0, prompt: 'printf "%s %s" "$BRIDGE_CHAT_ID" "$(command -v cc-connect)"' });
     await scheduler.start();
     assert.ok(scheduler.nextRun(row.id));
     assert.ok(await scheduler.fire(row.id));
-    assert.deepEqual(sent, ["cron-ok"]);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], /^123 .*\/deploy\/telegram-bin\/cc-connect$/);
     assert.equal(store.lastRuns(row.id)[0].outcome, "completed");
   } finally {
     scheduler.stop();
     store.close();
   }
+});
+
+test("keeps handles in prompt content and strips only addressing syntax", () => {
+  assert.equal(accept({ ...dm, text: "investigate @agent_bot" })?.text, "investigate @agent_bot");
+  assert.equal(accept({ ...group, text: "/ask@agent_bot check @agent_bot" })?.text, "check @agent_bot");
+  assert.equal(accept({ ...group, text: "contact dev@agent_bot.example" }), undefined);
+  assert.equal(accept({ ...group, text: "@agent_bot hello" })?.text, "hello");
+});
+
+import { Telegram } from "../src/telegram/api.ts";
+
+test("retries an explicitly rate-limited send and preserves its topic", async t => {
+  const payloads: string[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    payloads.push(String(init.body));
+    if (payloads.length === 1) return Response.json({ ok: false, error_code: 429, parameters: { retry_after: 0 } }, { status: 429 });
+    return Response.json({ ok: true, result: { message_id: 7 } });
+  });
+  const result = await new Telegram("test-token").send({ chat_id: "-123", message_thread_id: 4 }, "hello");
+  assert.equal(result.message_id, 7);
+  assert.equal(payloads.length, 2);
+  assert.equal(payloads[0], payloads[1]);
+  assert.equal(JSON.parse(payloads[1]).message_thread_id, 4);
 });

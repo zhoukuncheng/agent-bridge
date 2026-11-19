@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { readFileSync } from "node:fs";
 import { Redactor } from "../security/redact.ts";
 
@@ -22,13 +23,21 @@ export class Telegram {
 
   async call(method: string, data: object, signal = AbortSignal.timeout(65_000)) {
     const form = data instanceof FormData;
-    const res = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
-      method: "POST", body: form ? data : JSON.stringify(data),
-      headers: form ? undefined : { "Content-Type": "application/json" }, redirect: "error", signal,
-    }).catch(() => { throw new Error(`Telegram ${method} connection failed`); });
-    const body = await res.json() as { ok: boolean; result: any; error_code: number; description: string };
-    if (!body.ok) throw new TelegramError(method, body.error_code, this.redactor.redact(body.description));
-    return body.result;
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
+        method: "POST", body: form ? data : JSON.stringify(data),
+        headers: form ? undefined : { "Content-Type": "application/json" }, redirect: "error", signal,
+      }).catch(() => { throw new Error(`Telegram ${method} connection failed`); });
+      const body = await res.json() as { ok: boolean; result: any; error_code: number; description: string; parameters?: { retry_after?: number } };
+      // Telegram explicitly rejected this request, so retrying cannot duplicate a delivered message.
+      const retryAfter = body.parameters?.retry_after;
+      if (body.error_code === 429 && attempt < 2 && typeof retryAfter === "number" && retryAfter >= 0 && retryAfter <= 60) {
+        await delay(retryAfter * 1000, undefined, { signal });
+        continue;
+      }
+      if (!body.ok) throw new TelegramError(method, body.error_code, this.redactor.redact(body.description));
+      return body.result;
+    }
   }
 
   async send(target: Target, raw: string, format: Format = "markdown") {

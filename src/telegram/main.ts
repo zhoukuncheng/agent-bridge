@@ -38,7 +38,7 @@ async function handle(message: TelegramMessage) {
     return send("下一条消息将开启新会话。");
   }
   if (command && !["ask","html"].includes(command)) return send("可用命令见 /help");
-  const prompt = (command ? text.slice(command.length + 1) : text).trim();
+  const prompt = text;
   if (!prompt) return send("请输入问题。");
   if (active.size >= config.maxLiveSessions) return send("所有 Codex 会话均在运行，请稍后重试。");
   const control = new AbortController();
@@ -78,7 +78,8 @@ const commands = [
 for (const scope of [{ type: "default" }, { type: "chat", chat_id: config.ownerUserId }]) {
   await bot.call("setMyCommands", { scope, commands }).catch(err => console.error("Telegram menu:", err.message));
 }
-await scheduler.start();
+// Catch-up can run long Codex jobs. Continue polling while historical runs finish.
+void scheduler.start().catch(err => console.error("Telegram cron catch-up:", err.message));
 console.log(`Telegram @${me.username} ready, ${store.listSchedules().filter(r => r.enabled).length} enabled schedules`);
 let offset = Number(store.getMeta("telegram_offset") ?? 0);
 const pending = new Set<Promise<unknown>>();
