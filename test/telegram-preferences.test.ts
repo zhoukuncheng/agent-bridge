@@ -69,3 +69,22 @@ test("all Telegram agent schedules use the validated global selection on their n
     assert.equal(selectionFor(store, cfg, "123", "0").effort, "high");
   } finally { store.close(); }
 });
+
+test("a settings change during the start notification applies to the next firing", async t => {
+  const store = new Store(":memory:");
+  try {
+    await setCronSelection(store, cfg, "/tmp", "set codex gpt medium", catalog);
+    const scheduler = new TelegramService({ ...defaultConfig, telegram: cfg }, store, {
+      async send() {
+        await setCronSelection(store, cfg, "/tmp", "set agy gemini low", catalog);
+        return { message_id: 1 };
+      },
+    });
+    const turn = t.mock.method(scheduler, "turn", async () => {});
+    const job = store.addSchedule({ channel: "123", created_by: "123", cwd: "/tmp", mode: "fresh",
+      cron: "0 0 * * *", agent: "agy", prompt: "report" });
+    await scheduler.fire(job.id);
+    await scheduler.fire(job.id);
+    assert.deepEqual(turn.mock.calls.map(call => call.arguments[3]?.selection?.provider), ["codex", "antigravity"]);
+  } finally { store.close(); }
+});

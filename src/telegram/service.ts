@@ -57,8 +57,8 @@ export class TelegramService extends ScheduleTimer {
   protected async execute(row: ScheduleRow, timeout: number) {
     const target = { chat_id: row.channel };
     if (!row.exec) {
-      if (!row.silent) await this.bot.send(target, `⏰ ${row.name ?? row.id}`);
       const selection = cronSelection(this.store, this.config.telegram!);
+      if (!row.silent) await this.bot.send(target, `⏰ ${row.name ?? row.id}`);
       return this.turn(target, "cron:" + row.id, row.prompt, { cwd: row.cwd, timeout, resume: row.mode === "continue", schedule: row.id, selection });
     }
     const run = this.store.startRun(row.id, row.channel, "", "exec");
