@@ -74,6 +74,9 @@ export class Router {
     const mentioned = msg.text.includes(`<@${botUserId}`);
     const owned = inThread && manager.owns(msg.channel, msg.threadTs!);
     if (!isDm && !mentioned && !owned) return;
+    const text = decodeSlackText(stripMention(msg.text, botUserId));
+    // After !stop, people can keep talking in the thread without the agent answering every message.
+    if (owned && !isDm && !mentioned && !text.trim().startsWith("!") && this.deps.store.getThread(msg.channel, msg.threadTs!)?.mention_only) return;
     // Persistent: a message is handled once across live events, backfill and restarts.
     if (!this.deps.store.claimMessage(msg.channel, msg.ts)) return;
 
@@ -83,7 +86,6 @@ export class Router {
       threadTs: anchor,
       ...(isDm ? {} : { recipientUserId: msg.user, teamId: msg.teamId ?? this.deps.teamId }),
     };
-    const text = decodeSlackText(stripMention(msg.text, botUserId));
     const command = parseCommand(text || (msg.files?.length ? "(see the attached files)" : ""));
 
     try {
@@ -278,7 +280,7 @@ export class Router {
       await this.reply(
         target.channel,
         target.threadTs,
-        `🤖 *${spec.agent}*${spec.model ? ` (${spec.model})` : ""} · \`${spec.cwd}\` · session \`${binding.session.id.slice(0, 8)}\` — reply here to continue, \`!stop\` to interrupt${lock}`,
+        `🤖 *${spec.agent}*${spec.model ? ` (${spec.model})` : ""} · \`${spec.cwd}\` · session \`${binding.session.id.slice(0, 8)}\` — reply here to continue, \`!stop\` to stop${lock}`,
       );
     }
     this.deps.store.touchThread(target.channel, target.threadTs);
@@ -288,17 +290,25 @@ export class Router {
   }
 
   private async stop(msg: InboundMessage, anchor: string, trusted: boolean): Promise<void> {
+    const stored = this.deps.store.getThread(msg.channel, anchor);
     const binding = this.deps.manager.get(msg.channel, anchor);
-    if (!binding || !binding.session.busy()) {
+    const running = Boolean(binding?.session.busy());
+    if (!running && !stored) {
       await this.reply(msg.channel, anchor, "nothing is running in this thread");
       return;
     }
-    if (!trusted && this.deps.store.getThread(msg.channel, anchor)?.started_by !== msg.user) {
+    if (!trusted && stored?.started_by !== msg.user) {
       await this.reply(msg.channel, anchor, "⚠️ only the session's starter or the owner can stop it");
       return;
     }
-    await binding.session.abort();
-    await this.reply(msg.channel, anchor, "⏹️ stopping");
+    if (running) await binding!.session.abort();
+    const status = running ? "⏹️ stopping" : "nothing is running in this thread";
+    if (!stored || msg.channelType === "im") {
+      await this.reply(msg.channel, anchor, status);
+      return;
+    }
+    this.deps.store.setThreadMentionOnly(msg.channel, anchor, true);
+    await this.reply(msg.channel, anchor, `${status}. From now on I only answer here when mentioned; mention me to continue this session.`);
   }
 
   private async status(msg: InboundMessage, anchor: string): Promise<void> {
@@ -306,7 +316,7 @@ export class Router {
     const live = this.deps.manager.get(msg.channel, anchor);
     const lines = [
       stored
-        ? `*${stored.agent}* · \`${stored.cwd}\` · session \`${stored.session_id}\` · ${live ? (live.session.busy() ? "running" : "idle (live)") : "released"}${stored.restricted ? " · 🔒 read-only" : ""}${stored.display ? ` · display ${stored.display}` : ""}`
+        ? `*${stored.agent}* · \`${stored.cwd}\` · session \`${stored.session_id}\` · ${live ? (live.session.busy() ? "running" : "idle (live)") : "released"}${stored.restricted ? " · 🔒 read-only" : ""}${stored.display ? ` · display ${stored.display}` : ""}${stored.mention_only ? " · mention-only" : ""}`
         : "no session in this thread",
       `live sessions: ${this.deps.manager.liveCount()}/${this.deps.config.maxLiveSessions}`,
     ];

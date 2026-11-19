@@ -90,7 +90,7 @@ Commands are plain messages starting with `!` (no Slack slash commands are requi
 | `!run [--agent A] [--model M] [--cwd DIR] [--timeout MIN] <prompt>` | Runs a one-shot task and releases the process afterward. Replying in the thread resumes the session. |
 | `!cron add "<expr>" [options] <prompt>` | Adds a 5-field (or 6-field with seconds) cron schedule. Options: `--agent A`, `--model M`, `--cwd DIR`, `--channel here\|dm\|#chan`, `--mode fresh\|continue`, `--tz TZ`, `--name N`, `--timeout MIN`, `--silent`, `--exec`. |
 | `!cron list` · `run <id>` · `pause <id>` · `resume <id>` · `rm <id>` | Lists, manually triggers, pauses, resumes, or deletes schedules. |
-| `!stop` · `!status` · `!release` *(in a thread)* | Interrupts the active turn · shows session info · disposes the live process (the next reply resumes it). |
+| `!stop` · `!status` · `!release` *(in a thread)* | Interrupts the active turn; in a channel thread it also makes the thread mention-only, so later replies reach the agent only when they mention the bot (the session continues) · shows session info · disposes the live process (the next reply resumes it). |
 | `!trust [prompt]` *(in a 🔒 thread)* | Lifts read-only restriction and grants full tools; sends `prompt` immediately if provided. |
 | `!concise` · `!verbose` *(in a thread)* | Switches tool-call rendering mode for the thread starting on the next turn. |
 | `!help` | Displays the command summary. |

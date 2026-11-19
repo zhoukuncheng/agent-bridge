@@ -18,6 +18,8 @@ export interface ThreadRow {
   started_by: string | null;
   /** Per-thread display override; null follows the config. */
   display: string | null;
+  /** 1 after `!stop` in a channel thread: only messages that mention the bot (or `!` commands) reach the agent. */
+  mention_only: number;
   created_at: number;
   last_active: number;
 }
@@ -114,6 +116,7 @@ export class Store {
       ["restricted", "INTEGER NOT NULL DEFAULT 0"],
       ["started_by", "TEXT"],
       ["display", "TEXT"],
+      ["mention_only", "INTEGER NOT NULL DEFAULT 0"],
     ];
     for (const [name, type] of threadAdded) if (!threadColumns.has(name)) this.db.exec(`ALTER TABLE threads ADD COLUMN ${name} ${type}`);
     this.db.exec(`
@@ -147,6 +150,10 @@ export class Store {
     this.db.prepare("UPDATE threads SET display = ? WHERE channel = ? AND thread_ts = ?").run(display, channel, threadTs);
   }
 
+  setThreadMentionOnly(channel: string, threadTs: string, mentionOnly: boolean): void {
+    this.db.prepare("UPDATE threads SET mention_only = ? WHERE channel = ? AND thread_ts = ?").run(mentionOnly ? 1 : 0, channel, threadTs);
+  }
+
   /** Threads with activity since `sinceMs`, newest first. */
   recentThreads(sinceMs: number): ThreadRow[] {
     return this.db.prepare("SELECT * FROM threads WHERE last_active >= ? ORDER BY last_active DESC").all(sinceMs) as unknown as ThreadRow[];
@@ -156,7 +163,7 @@ export class Store {
     return this.db.prepare("SELECT * FROM threads WHERE channel = ? AND thread_ts = ?").get(channel, threadTs) as ThreadRow | undefined;
   }
 
-  upsertThread(row: Omit<ThreadRow, "created_at" | "last_active" | "restricted" | "started_by" | "display"> & { restricted?: number; started_by?: string | null }): void {
+  upsertThread(row: Omit<ThreadRow, "created_at" | "last_active" | "restricted" | "started_by" | "display" | "mention_only"> & { restricted?: number; started_by?: string | null }): void {
     const now = Date.now();
     this.db
       .prepare(`INSERT INTO threads (channel, thread_ts, agent, session_id, cwd, model, kind, restricted, started_by, created_at, last_active)
