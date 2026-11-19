@@ -25,10 +25,13 @@ interface CcJob {
   mute?: boolean;
   session_mode?: string;
   timeout_mins?: number;
+  last_run?: string;
 }
 
 const { values } = parseArgs({
   options: {
+    platform: { type: "string", default: "slack" },
+    timezone: { type: "string" },
     jobs: { type: "string", default: "~/.cc-connect/crons/jobs.json" },
     cwd: { type: "string", default: "~/code" },
     agent: { type: "string" },
@@ -46,19 +49,21 @@ for (const job of jobs) {
   const origin = `cc-connect:${job.id}`;
   const [platform, channel, user] = job.session_key.split(":");
   const label = `${job.id} ${job.description ?? ""}`;
-  if (platform !== "slack" || !channel || !user) {
-    console.log(`skip ${label}: session ${job.session_key} is not a Slack session`);
+  if (platform !== values.platform || !["slack", "telegram"].includes(platform) || !channel || !user) {
+    console.log(`skip ${label}: session ${job.session_key} does not match requested platform`);
     continue;
   }
+  if (platform === "telegram" && (user !== config.ownerUserId || !/^-?\d+$/.test(channel))) throw new Error("unexpected Telegram target");
   if (store.findScheduleByOrigin(origin)) {
     console.log(`skip ${label}: already imported`);
     continue;
   }
   if (job.mute) console.log(`note ${label}: muted in cc-connect; imported as silent`);
-  Scheduler.validate(job.cron_expr);
+  Scheduler.validate(job.cron_expr, values.timezone);
   const row = {
     name: job.description || null,
     cron: job.cron_expr,
+    tz: values.timezone,
     channel,
     agent,
     cwd,
@@ -76,6 +81,7 @@ for (const job of jobs) {
     console.log(`would import ${label}: ${JSON.stringify({ ...row, prompt: row.prompt.slice(0, 60) })}`);
   } else {
     const added = store.addSchedule(row);
+    if (job.last_run && Number.isFinite(Date.parse(job.last_run))) store.db.prepare("UPDATE schedules SET last_run_at=? WHERE id=?").run(Date.parse(job.last_run), added.id);
     console.log(`imported ${label} → #${added.id} (${row.exec ? "exec" : row.silent ? "silent" : row.mode}, ${row.enabled ? "enabled" : "paused"})`);
   }
   imported++;

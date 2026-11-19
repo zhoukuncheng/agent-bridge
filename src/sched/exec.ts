@@ -21,7 +21,7 @@ export function runShell(command: string, cwd: string, timeoutMinutes: number): 
     child.stdout.on("data", append);
     child.stderr.on("data", append);
     let timedOut = false;
-    const timer = setTimeout(() => {
+    const timer = timeoutMinutes > 0 ? setTimeout(() => {
       timedOut = true;
       // detached: the command runs in its own process group, so kill the whole group.
       try {
@@ -29,7 +29,7 @@ export function runShell(command: string, cwd: string, timeoutMinutes: number): 
       } catch {
         child.kill("SIGTERM");
       }
-    }, timeoutMinutes * 60_000);
+    }, timeoutMinutes * 60_000) : undefined;
     child.on("error", (err) => {
       clearTimeout(timer);
       resolve({ code: null, output: `failed to start: ${err.message}`, timedOut: false });

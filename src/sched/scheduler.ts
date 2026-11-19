@@ -28,19 +28,15 @@ export const scheduleLabel = (row: ScheduleRow) => row.name || truncate(row.prom
  * A firing is skipped while the previous one is still running. Firings missed while the
  * bridge was down are not replayed.
  */
-export class Scheduler {
+export abstract class ScheduleTimer {
   private jobs = new Map<number, Cron>();
   private running = new Set<number>();
-  private readonly store: Store;
-  private readonly runner: Runner;
-  private readonly manager: SessionManager;
-  private readonly api: SlackApi;
-  private readonly options: SchedulerOptions;
+  protected readonly store: Store;
+  protected readonly api: Pick<SlackApi, "postMessage" | "openDm">;
+  protected readonly options: SchedulerOptions;
 
-  constructor(store: Store, runner: Runner, manager: SessionManager, api: SlackApi, options: SchedulerOptions) {
+  constructor(store: Store, api: Pick<SlackApi, "postMessage" | "openDm">, options: SchedulerOptions) {
     this.store = store;
-    this.runner = runner;
-    this.manager = manager;
     this.api = api;
     this.options = options;
   }
@@ -154,13 +150,30 @@ export class Scheduler {
     try {
       this.store.markScheduleRun(id);
       const timeout = row.timeout_min ?? this.options.runTimeoutMinutes;
-      if (row.exec) await this.fireExec(row, timeout);
-      else if (row.silent) await this.fireSilent(row, timeout);
-      else await this.fireStreamed(row, timeout);
+      await this.execute(row, timeout);
       return true;
     } finally {
       this.running.delete(id);
     }
+  }
+
+  protected abstract execute(row: ScheduleRow, timeout: number): Promise<void>;
+}
+
+export class Scheduler extends ScheduleTimer {
+  private readonly runner: Runner;
+  private readonly manager: SessionManager;
+
+  constructor(store: Store, runner: Runner, manager: SessionManager, api: SlackApi, options: SchedulerOptions) {
+    super(store, api, options);
+    this.runner = runner;
+    this.manager = manager;
+  }
+
+  protected async execute(row: ScheduleRow, timeout: number): Promise<void> {
+    if (row.exec) await this.fireExec(row, timeout);
+    else if (row.silent) await this.fireSilent(row, timeout);
+    else await this.fireStreamed(row, timeout);
   }
 
   private setRunThread(runId: number, ts: string): void {

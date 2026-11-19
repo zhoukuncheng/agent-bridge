@@ -197,3 +197,48 @@ src/sched/     scheduler.ts (croner, catch-up) · exec.ts
 src/security/  redact.ts (outbound redaction)
 src/store.ts   node:sqlite
 ```
+
+## Telegram with Codex
+
+Use the Telegram entry point `src/telegram/main.ts` with Bun or Node 24+.
+It loads the SQLite store, Croner and the Telegram HTTP client. The Slack Bolt,
+OAR and ACP runtimes stay outside this process. Codex runs once per turn using
+`codex exec --json`. The native thread ID is stored by chat and topic for
+`exec resume`; the child exits between turns. Codex must already be signed in.
+
+Set `AGENT_BRIDGE_CONFIG` to a private JSON file and `AGENT_BRIDGE_TOKEN_FILE`
+to a mode-0600 file containing the Telegram token. Use a dedicated database:
+
+```json
+{
+  "ownerUserId": "12345678",
+  "defaultCwd": "/path/to/workspace",
+  "dbPath": "~/.local/share/agent-bridge/telegram.db",
+  "cronCatchUp": "off",
+  "telegram": { "model": "your-codex-model", "effort": "medium", "fullAccess": false }
+}
+```
+
+Only the numeric owner can invoke Codex. Private chats, forum topics, group
+mentions, replies to the bot and slash commands are supported. The bot receives
+only messages Telegram delivers under the group's privacy settings. Use
+`/new`, `/ask`, `/html`, `/stop`, or `/cron`. Rich Markdown and HTML replies use
+`sendRichMessage` with a plain-text fallback. Private chats support stoppable
+generation drafts. Messages from bots, anonymous administrators and channels
+are ignored. Agent processes receive an attachment sender on PATH compatible
+with `cc-connect send --file` and `--image`. Set fullAccess only for an owner
+who needs the local Codex unrestricted execution mode.
+
+Import while stopped using the original scheduler's timezone:
+
+```sh
+node scripts/migrate-cc-connect.ts --platform telegram --agent codex --cwd /path/to/workspace --timezone Etc/UTC
+bun --smol src/telegram/main.ts
+```
+
+The importer keeps origin IDs and skips previously imported jobs. Verify target,
+mode, expression, timezone and prompt before cutting over. A sample Linux unit
+is in `deploy/agent-bridge-telegram.service`. Stop the previous poller before
+starting this one. To test the real API without polling or running production jobs,
+`bun --smol scripts/telegram-e2e.ts` dispatches a synthetic owner message,
+resumes its real Codex conversation and checks two real Telegram receipts.
