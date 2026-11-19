@@ -40,7 +40,7 @@ const { values } = parseArgs({
 });
 if (!["slack", "telegram"].includes(values.platform!)) throw new Error("unsupported migration platform");
 const config = loadConfig();
-const agent = values.agent ?? (values.platform === "telegram" ? "codex" : config.defaultAgent);
+const agent = values.agent ?? (values.platform === "telegram" ? (config.telegram?.agent ?? "codex") : config.defaultAgent);
 const cwd = expandHome(values.cwd!);
 const jobs = JSON.parse(readFileSync(expandHome(values.jobs!), "utf8")) as CcJob[];
 const store = new Store(expandHome(config.dbPath));
