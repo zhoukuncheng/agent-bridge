@@ -1,0 +1,21 @@
+[Unit]
+Description=Agent Bridge Telegram and Codex
+After=network-online.target
+Wants=network-online.target
+Conflicts=cc-connect.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/agent-bridge
+Environment=HOME=/root
+Environment=AGENT_BRIDGE_CONFIG=/root/.config/agent-bridge/telegram.json
+Environment=AGENT_BRIDGE_TOKEN_FILE=/root/.config/agent-bridge/telegram.token
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/root/.local/share/agent-bridge/runtime/node_modules/.bin/bun --smol src/telegram/main.ts
+Restart=on-failure
+RestartSec=4
+UMask=0077
+TimeoutStopSec=25
+
+[Install]
+WantedBy=multi-user.target

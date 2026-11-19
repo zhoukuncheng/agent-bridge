@@ -38,3 +38,20 @@ test("imports cc-connect cron jobs once, keeping kind, schedule, target and stat
     ],
   );
 });
+
+test("rejects a foreign Telegram DM without committing earlier jobs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "telegram-migrate-"));
+  const config = join(dir, "config.json"), db = join(dir, "bridge.db");
+  writeFileSync(config, JSON.stringify({ ownerUserId: "123", dbPath: db }));
+  const jobs = ["telegram:123:123", "telegram:456:123"].map((session_key, i) => ({
+    session_key, id: String(i), cron_expr: "0 0 * * *", prompt: "report", enabled: true,
+  }));
+  const path = join(dir, "jobs.json");
+  writeFileSync(path, JSON.stringify(jobs));
+  assert.throws(() => execFileSync(process.execPath, [script, "--platform", "telegram", "--jobs", path], {
+    env: { ...process.env, AGENT_BRIDGE_CONFIG: config }, stdio: "pipe",
+  }), /unexpected Telegram target/);
+  const store = new Store(db);
+  assert.deepEqual(store.listSchedules(), []);
+  store.close();
+});

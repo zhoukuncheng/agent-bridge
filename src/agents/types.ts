@@ -70,4 +70,4 @@ export function truncate(text: string, max: number): string {
 }
 
 /** The bridge's own secrets: agents run arbitrary commands, so they never inherit these. */
-export const bridgeSecretEnv = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"] as const;
+export const bridgeSecretEnv = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "TELEGRAM_BOT_TOKEN"] as const;
