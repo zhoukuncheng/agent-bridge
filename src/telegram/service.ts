@@ -55,7 +55,8 @@ export class TelegramService extends ScheduleTimer {
   }
 
   protected async execute(row: ScheduleRow, timeout: number) {
-    const target = { chat_id: row.channel };
+    // A schedule added from a forum topic keeps that topic in thread_ts.
+    const target: Target = { chat_id: row.channel, ...(row.thread_ts ? { message_thread_id: Number(row.thread_ts) } : {}) };
     if (!row.exec) {
       const selection = cronSelection(this.store, this.config.telegram!);
       if (!row.silent) await this.bot.send(target, `⏰ ${row.name ?? row.id}`);
@@ -65,7 +66,7 @@ export class TelegramService extends ScheduleTimer {
     try {
       const result = await runShell(row.prompt, row.cwd, timeout, deliveryEnv(target));
       if (result.timedOut || result.code !== 0) throw new Error(`exit ${result.code}: ${result.output.slice(-2000)}`);
-      await this.bot.send(target, result.output.trim() || "完成");
+      await this.bot.send(target, result.output.trim() || "Done (no output).");
       this.store.finishRun(run, "completed");
     } catch (err) {
       this.store.finishRun(run, "failed", (err as Error).message);

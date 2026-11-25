@@ -19,29 +19,29 @@ export async function changeSelection(store: Store, cfg: TelegramConfig, chat: s
   const saved = read(store, key);
   const current = selectionFor(store, cfg, chat, topic);
   if (command === "provider") {
-    if (!value) return `当前 provider：${current.provider}。可选 codex、antigravity（agy）。`;
+    if (!value) return `Provider: ${current.provider}. Available: codex, antigravity (agy).`;
     const provider = providerId(value.toLowerCase());
     await catalog(provider, cwd, cfg.fullAccess);
     store.setMeta(key, JSON.stringify({ ...saved, provider }));
-    return `当前 provider：${provider}`;
+    return `Provider: ${provider}`;
   }
   const models = await catalog(current.provider, cwd, cfg.fullAccess);
   const active = current.model ? models.find(m => m.id === current.model) : models.find(m => m.default);
   const selected = { ...current };
   if (command === "model") {
-    if (!value) return `当前模型：${current.model ?? active?.id ?? "原生默认"}\n${models.map(m => m.id).join("\n")}`;
+    if (!value) return `Model: ${current.model ?? active?.id ?? "provider default"}\n${models.map(m => m.id).join("\n")}`;
     const model = models.find(m => m.id === value);
-    if (!model) throw new Error("模型不在当前 provider 的可用列表，请使用 /model 查看。");
+    if (!model) throw new Error("That model is not available for this provider; send /model to list the models.");
     selected.model = model.id;
     selected.effort = model.effortLevels?.includes(current.effort ?? "") ? current.effort : model.defaultEffort;
   } else {
     const levels = active?.effortLevels ?? [];
-    if (!value) return `当前推理档位：${current.effort ?? active?.defaultEffort ?? "原生默认"}\n可选：${levels.join("、") || "未提供，请先用 /model 选择支持推理档位的模型"}`;
-    if (!levels.includes(value)) throw new Error("当前模型不支持该推理档位，请使用 /reasoning 查看。");
+    if (!value) return `Reasoning: ${current.effort ?? active?.defaultEffort ?? "provider default"}\nAvailable: ${levels.join(", ") || "none; pick a model that supports reasoning levels with /model first"}`;
+    if (!levels.includes(value)) throw new Error("The current model does not support that reasoning level; send /reasoning to list the levels.");
     selected.effort = value;
   }
   store.setMeta(key, JSON.stringify({ ...saved, settings: { ...saved.settings, [selected.provider]: selected } }));
-  return `${selected.provider} · ${selected.model ?? active?.id ?? "原生默认模型"} · ${selected.effort ?? "原生默认推理档位"}`;
+  return `${selected.provider} · ${selected.model ?? active?.id ?? "default model"} · ${selected.effort ?? "default reasoning"}`;
 }
 
 export const threadKey = (topic: string, provider: Provider) => `${topic}:${provider}`;
@@ -64,14 +64,14 @@ export async function setCronSelection(store: Store, config: TelegramConfig, cwd
   const provider = providerId(backend.toLowerCase());
   const models = await catalog(provider, cwd, config.fullAccess);
   const entry = models.find(m => m.id === model);
-  if (!entry) throw new Error(`${provider} 可选模型：${models.map(m => m.id).join("、")}`);
+  if (!entry) throw new Error(`${provider} models: ${models.map(m => m.id).join(", ")}`);
   const levels = entry.effortLevels ?? [];
-  if (requestedEffort && !levels.includes(requestedEffort)) throw new Error(`${model} 可选推理档位：${levels.join("、") || "仅原生默认"}`);
+  if (requestedEffort && !levels.includes(requestedEffort)) throw new Error(`${model} reasoning levels: ${levels.join(", ") || "provider default only"}`);
   const selection = { provider, model, effort: requestedEffort ?? entry.defaultEffort };
   store.setMeta(cronKey, JSON.stringify(selection));
   return selection;
 }
 
 export function describeCronSelection(s: Selection) {
-  return `定时任务统一设置：${s.provider} · ${s.model ?? "原生默认模型"} · ${s.effort ?? "原生默认推理档位"}`;
+  return `Schedules run on: ${s.provider} · ${s.model ?? "default model"} · ${s.effort ?? "default reasoning"}`;
 }

@@ -9,7 +9,7 @@ export interface Selection { provider: Provider; model?: string; effort?: string
 export function providerId(value: string): Provider {
   if (value === "agy" || value === "antigravity") return "antigravity";
   if (value === "codex") return value;
-  throw new Error("可选 provider：codex、antigravity（agy）");
+  throw new Error("Providers: codex, antigravity (agy).");
 }
 
 export function defaults(config: TelegramConfig, provider = providerId(config.agent ?? "codex")): Selection {
@@ -25,7 +25,7 @@ process.env.OAR_CODEX_SANDBOX = "inherit";
 
 function checkAccess(provider: Provider, fullAccess?: boolean) {
   // OAR's agy ACP host always auto-approves permission requests.
-  if (provider === "antigravity" && !fullAccess) throw new Error("当前 OAR Antigravity 需要显式配置 fullAccess，已停止启动。");
+  if (provider === "antigravity" && !fullAccess) throw new Error("Antigravity auto-approves every tool call through OAR, so it needs \"telegram.fullAccess\": true in the config; not starting it.");
 }
 
 async function installed(provider: Provider) {
@@ -41,7 +41,7 @@ export async function modelCatalog(provider: Provider, cwd: string, fullAccess?:
   checkAccess(provider, fullAccess);
   const { runtime, installation } = await installed(provider);
   const result = await runtime.listModels?.(installation, { cwd, env: stripped, timeoutMs: 30000 });
-  if (result?.kind !== "ok") throw new Error(`${provider} 模型列表不可用 (${result?.kind ?? "unsupported"})`);
+  if (result?.kind !== "ok") throw new Error(`${provider} model list is unavailable (${result?.kind ?? "unsupported"})`);
   return result.models.filter(m => !m.disabled);
 }
 

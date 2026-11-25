@@ -20,8 +20,8 @@ test("provider and reasoning stay local to the topic and survive a switch back",
     await cmd("provider", "codex");
     await cmd("model", "gpt");
     await cmd("reasoning", "medium");
-    await assert.rejects(cmd("reasoning", "high"), /不支持/);
-    await assert.rejects(cmd("model", "missing"), /可用列表/);
+    await assert.rejects(cmd("reasoning", "high"), /does not support/);
+    await assert.rejects(cmd("model", "missing"), /not available/);
     await cmd("provider", "agy");
     assert.equal(selectionFor(store, cfg, "-12", "7").effort, "high");
     await cmd("provider", "codex");
