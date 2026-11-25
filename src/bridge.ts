@@ -1,3 +1,5 @@
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
 import { AcpDriver } from "./agents/acp.ts";
 import { installOarWrappers, systemdRunAvailable } from "./agents/memcap.ts";
 import { OarDriver } from "./agents/oar.ts";
@@ -17,6 +19,45 @@ const oarBinaryVars: Record<string, [string, string]> = {
   claude: ["OAR_CLAUDE_BIN", "claude"],
   antigravity: ["OAR_ANTIGRAVITY_BIN", "agy"],
 };
+
+function executable(command: string, pathEnv: string): boolean {
+  const candidates = command.includes("/") ? [command] : pathEnv.split(delimiter).filter(Boolean).map((dir) => join(dir, command));
+  return candidates.some((path) => {
+    try {
+      accessSync(path, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Startup warnings for agents whose CLI cannot be found, so the failure shows before the first message.
+ * Covers ACP commands and Claude (needed for 🔒 sessions); OAR finds other runtimes in more places than PATH.
+ */
+export function agentWarnings(config: Config, env: NodeJS.ProcessEnv = process.env): string[] {
+  const warnings: string[] = [];
+  for (const [name, agent] of Object.entries(config.agents)) {
+    let found: boolean;
+    let command: string;
+    if (agent.kind === "acp") {
+      command = expandHome(agent.command);
+      found = executable(command, env.PATH ?? "");
+    } else if (agent.runtime === "claude") {
+      command = env.OAR_CLAUDE_BIN || "claude";
+      // OAR also looks where Claude Code's native installer puts it.
+      found = executable(command, env.PATH ?? "") || (!env.OAR_CLAUDE_BIN && executable(join(env.HOME ?? "", ".local/bin/claude"), ""));
+    } else continue;
+    if (found) continue;
+    warnings.push(
+      name === config.restrictedAgent
+        ? `agent "${name}": ${command} not found; 🔒 read-only sessions (guests, untrusted threads) will fail`
+        : `agent "${name}": ${command} not found; sessions with it will fail`,
+    );
+  }
+  return warnings;
+}
 
 /**
  * Builds the agent drivers. With `memoryCap`, every agent process starts in its own

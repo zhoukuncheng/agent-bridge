@@ -112,16 +112,23 @@ export const defaultConfig: Config = {
   cronCatchUpHours: 12,
 };
 
+export function unknownKeys(raw: object): string[] {
+  return Object.keys(raw).filter((key) => key !== "telegram" && !(key in defaultConfig));
+}
+
 export function loadConfig(path = process.env.AGENT_BRIDGE_CONFIG ?? "~/.config/agent-bridge/config.json"): Config {
   const raw = JSON.parse(readFileSync(expandHome(path), "utf8")) as Partial<Config>;
-  const config: Config = { ...defaultConfig, ...raw, agents: { ...defaultConfig.agents, ...raw.agents } };
+  for (const key of unknownKeys(raw)) console.warn(`config: unknown key "${key}" ignored`);
+  // A configured agents map replaces the defaults, so agents you do not have installed are not offered.
+  const config: Config = { ...defaultConfig, ...raw, agents: raw.agents ?? defaultConfig.agents };
   if (raw.telegram && raw.dbPath === undefined) config.dbPath = "~/.local/share/agent-bridge/telegram.db";
   if (!config.ownerUserId) throw new Error("config: ownerUserId is required");
   if (!config.allowUsers.length) config.allowUsers = [config.ownerUserId];
+  if (config.telegram) return config; // the Telegram bridge picks providers itself; the checks below are Slack's
   if (!config.agents[config.defaultAgent]) throw new Error(`config: defaultAgent ${config.defaultAgent} is not in agents`);
   const restricted = config.agents[config.restrictedAgent];
   if (!restricted || restricted.kind !== "oar" || restricted.runtime !== "claude") {
-    throw new Error(`config: restrictedAgent ${config.restrictedAgent} must be an OAR claude agent`);
+    throw new Error(`config: restrictedAgent ${config.restrictedAgent} must be an OAR claude agent; 🔒 read-only sessions run on Claude Code, so keep a { "kind": "oar", "runtime": "claude" } entry in agents`);
   }
   return config;
 }

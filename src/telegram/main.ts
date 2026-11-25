@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { cronSelection, cronUsage, describeCronSelection, setCronSelection, forgetSession, selectionFor, changeSelection } from "./preferences.ts";
+import { describeCronSelection, setCronSelection, forgetSession, selectionFor, changeSelection } from "./preferences.ts";
+import { cronCommand } from "./cron.ts";
 import { defaults } from "./providers.ts";
 import { loadConfig, expandHome } from "../config.ts";
 import { Store } from "../store.ts";
@@ -16,6 +17,12 @@ const scheduler = new TelegramService(config, store, bot);
 const drafts = new Map<number, AbortController>();
 const shutdown = new AbortController();
 let updatingCron = false;
+const helpText = [
+  "Message me to talk to the current agent (in groups, mention me or reply to me).",
+  "/provider, /model, /reasoning — show or switch the backend for this chat/topic.",
+  "/new — new conversation · /stop — stop the running turn · /html <prompt> — answer in rich HTML.",
+  "/cron — add, list, run, pause, resume and remove schedules; /cron set picks their provider and model.",
+].join("\n");
 const configuring = new Set<string>();
 const active = new Map<string, AbortController>();
 for (const sig of ["SIGTERM", "SIGINT"]) process.once(sig, () => {
@@ -30,18 +37,15 @@ async function handle(message: TelegramMessage) {
   const { target, topic, text, command } = input;
   const key = target.chat_id + ":" + topic;
   const send = (s: string) => bot.send(target, s);
-  if (command === "start" || command === "help") return send("直接发消息给当前 agent。/provider 选择后端 · /model 选择模型 · /reasoning 选择推理档位。群内请 @ 我或回复我。/new 新会话 · /stop 停止 · /cron 查看任务 · /html 以 HTML 回答");
+  if (command === "start" || command === "help") return send(helpText);
   if (command === "cron") {
-    if (!text || text === "list") {
-      const rows = store.listSchedules().map(r => `#${r.id} ${r.name} · ${r.cron} · ${r.tz ?? "local"} · ${scheduler.nextRun(r.id)?.toISOString() ?? "paused"}`);
-      return send([describeCronSelection(cronSelection(store, config.telegram!)), cronUsage, ...rows].join("\n"));
-    }
-    if (updatingCron) return send("正在更新定时任务设置，请稍后重试。");
+    if (!/^set(\s|$)/i.test(text)) return send(await cronCommand(text, { config, store, scheduler, target, send }));
+    if (updatingCron) return send("Schedule settings are being updated; try again in a moment.");
     updatingCron = true;
     let reply: string;
     try {
       const selection = await setCronSelection(store, config.telegram!, expandHome(config.defaultCwd), text);
-      reply = describeCronSelection(selection) + "。从下一次启动的 AI 任务生效。";
+      reply = describeCronSelection(selection) + ". Applies from the next agent schedule run.";
     } catch (err) {
       reply = (err as Error).message;
     } finally {
@@ -51,10 +55,10 @@ async function handle(message: TelegramMessage) {
   }
   if (command === "stop") {
     active.get(key)?.abort();
-    return send("已处理停止请求。");
+    return send("Stopping.");
   }
-  if (configuring.has(key)) return send("正在读取或更新设置，请稍后重试。");
-  if (active.has(key)) return send("当前会话正在运行。可用 /stop 停止。");
+  if (configuring.has(key)) return send("Settings are being read or updated; try again in a moment.");
+  if (active.has(key)) return send("A turn is already running here. Send /stop to stop it.");
   if (command === "provider" || command === "model" || command === "reasoning") {
     configuring.add(key);
     try {
@@ -69,12 +73,12 @@ async function handle(message: TelegramMessage) {
   }
   if (command === "new") {
     forgetSession(store, target.chat_id, topic, selectionFor(store, config.telegram!, target.chat_id, topic).provider);
-    return send("下一条消息将开启新会话。");
+    return send("The next message starts a new conversation.");
   }
-  if (command && !["ask","html"].includes(command)) return send("可用命令见 /help");
+  if (command && !["ask","html"].includes(command)) return send("Unknown command. Send /help for the list.");
   const prompt = text;
-  if (!prompt) return send("请输入问题。");
-  if (active.size >= config.maxLiveSessions) return send("所有 agent 会话均在运行，请稍后重试。");
+  if (!prompt) return send("Send a prompt after the command.");
+  if (active.size >= config.maxLiveSessions) return send("All agent slots are busy; try again shortly.");
   const control = new AbortController();
   active.set(key, control);
   const dm = message.chat.type === "private";
@@ -82,7 +86,7 @@ async function handle(message: TelegramMessage) {
   const progress = async () => {
     if (dm) {
       try {
-        await bot.call("sendRichMessageDraft", { ...target, draft_id: draftId, can_stop: true, rich_message: { html: "<tg-thinking>正在处理…</tg-thinking>" } });
+        await bot.call("sendRichMessageDraft", { ...target, draft_id: draftId, can_stop: true, rich_message: { html: "<tg-thinking>Working…</tg-thinking>" } });
         return;
       } catch { /* older Bot API or unsupported draft */ }
     }
@@ -106,9 +110,9 @@ async function handle(message: TelegramMessage) {
 store.pruneHandled(7 * 86400_000);
 store.db.prepare("UPDATE runs SET ended_at=?, outcome='interrupted' WHERE ended_at IS NULL").run(Date.now());
 const commands = [
-  ["help", "使用说明"], ["ask", "向当前 agent 提问"], ["new", "开启当前 provider 的新会话"],
-  ["provider", "查看或切换 provider"], ["model", "查看或切换模型"], ["reasoning", "查看或切换推理档位"],
-  ["html", "使用 HTML 富文本回答"], ["stop", "停止当前会话"], ["cron", "查看定时任务、统一设置 provider 和模型"],
+  ["help", "How to use this bot"], ["ask", "Ask the current agent"], ["new", "Start a new conversation"],
+  ["provider", "Show or switch the provider"], ["model", "Show or switch the model"], ["reasoning", "Show or switch the reasoning level"],
+  ["html", "Answer in rich HTML"], ["stop", "Stop the running turn"], ["cron", "Add, list and manage schedules"],
 ].map(([command, description]) => ({ command, description }));
 for (const scope of [{ type: "default" }, { type: "chat", chat_id: config.ownerUserId }]) {
   await bot.call("setMyCommands", { scope, commands }).catch(err => console.error("Telegram menu:", err.message));

@@ -179,7 +179,7 @@ export function parseCommand(input: string): Command {
 export const helpText = [
   "*agent-bridge* — talk to coding agents from Slack.",
   "• Mention me (or DM me) to start a session; each session lives in its own thread. Reply in the thread to continue.",
-  "• `!chat` (or `!new`) `--agent omp|agy [--model M] [--cwd DIR] <prompt>` — start a session with a specific agent.",
+  "• `!chat` (or `!new`) `--agent A [--model M] [--cwd DIR] <prompt>` — start a session with a specific agent from the config.",
   "• `!run [--agent A] [--timeout MIN] <prompt>` — one-shot task; the thread can still be continued afterwards.",
   '• `!cron add "0 9 * * 1-5" [--name N] [--agent A] [--channel here|dm|#chan] [--mode fresh|continue] [--tz Asia/Shanghai] [--timeout MIN] [--silent] [--exec] <prompt or shell command>`',
   "  `--silent` posts only the final answer; `--exec` runs the text with `sh -c` and posts its output.",

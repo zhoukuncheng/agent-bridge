@@ -1,5 +1,5 @@
 import { WebClient } from "@slack/web-api";
-import { createBridge, createDrivers } from "./bridge.ts";
+import { agentWarnings, createBridge, createDrivers } from "./bridge.ts";
 import { expandHome, loadConfig } from "./config.ts";
 import { pruneAttachments } from "./core/attachments.ts";
 import { WebSlackApi } from "./slack/api.ts";
@@ -13,6 +13,7 @@ if (!botToken || !appToken) {
 }
 
 const config = loadConfig();
+for (const warning of agentWarnings(config)) console.warn(warning);
 const client = new WebClient(botToken);
 const auth = await client.auth.test();
 const bridge = createBridge({
