@@ -37,6 +37,7 @@ A self-hosted Slack and Telegram bridge for local coding agents.
 ```sh
 git clone https://github.com/zhoukuncheng/agent-bridge.git ~/agent-bridge
 cd ~/agent-bridge
+git checkout v0.1.0   # or the latest tag from the Releases page; main moves faster
 npm ci
 ```
 
@@ -188,7 +189,9 @@ Works in private chats with the owner, as well as groups and forum topics (where
 | `/reasoning` · `/reasoning <LEVEL>` | Lists supported reasoning effort levels for the active model or sets one. |
 | `/new` | Clears the active provider's saved conversation in the current topic. |
 | `/stop` | Aborts the running turn. Private chats also support stoppable generation drafts (`sendRichMessageDraft`). |
+| `/cron add "<expr>" [options] <prompt>` | Adds a 5-field (or 6-field with seconds) cron schedule that posts to the current chat or forum topic. Options: `--name N`, `--tz TZ`, `--cwd DIR`, `--timeout MIN`, `--mode fresh\|continue`, `--silent`, `--exec` (same meaning as in Slack). Agent schedules use the shared `/cron set` selection, so `--agent`, `--model`, and `--channel` are not accepted. |
 | `/cron` · `/cron list` | Displays scheduled jobs and the shared Telegram schedule provider/model settings. |
+| `/cron run <id>` · `pause <id>` · `resume <id>` · `rm <id>` | Manually triggers, pauses, resumes, or deletes a schedule. |
 | `/cron set <provider> <model> [reasoning]` | Validates against the live OAR model catalog and sets the shared provider, model, and optional reasoning level for all agent-backed Telegram schedules (effective from the next firing; shell `--exec` jobs run directly). |
 | `/help` | Shows available commands. |
 
@@ -198,7 +201,7 @@ Works in private chats with the owner, as well as groups and forum topics (where
 
 ## Configuration Reference
 
-By default, configuration is loaded from `~/.config/agent-bridge/config.json` (override with `AGENT_BRIDGE_CONFIG`).
+By default, configuration is loaded from `~/.config/agent-bridge/config.json` (override with `AGENT_BRIDGE_CONFIG`). Unknown top-level keys (usually typos) are reported at startup and ignored.
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -209,7 +212,7 @@ By default, configuration is loaded from `~/.config/agent-bridge/config.json` (o
 | `defaultAgent` | `"claude"` | Default Slack agent key from `agents`. |
 | `defaultCwd` | `"~"` | Default working directory for sessions and schedules. |
 | `channelCwd` | `{}` | Per-channel working directory overrides (`{ "<channelId>": "/path" }`). |
-| `agents` | `claude`, `omp`, `agy` | Map of agent definitions (`kind: "oar"` or `kind: "acp"`). |
+| `agents` | `claude`, `omp`, `agy` | Map of agent definitions (`kind: "oar"` or `kind: "acp"`). A configured map replaces the defaults entirely; keep a `{ "kind": "oar", "runtime": "claude" }` entry for `restrictedAgent`. The bridge warns at startup when an ACP command or Claude cannot be found. ACP example: `"omp": { "kind": "acp", "command": "~/.local/bin/omp", "args": ["acp"] }`. |
 | `display` | `"concise"` | Slack turn display mode: `"concise"` or `"verbose"`. |
 | `idleMinutes` | `30` | Dispose idle live sessions after this many minutes (next message resumes). |
 | `maxLiveSessions` | `4` | Maximum concurrent live sessions (LRU idle eviction on Slack; active turn cap on Telegram). |
@@ -316,7 +319,8 @@ src/
                      attachments, and Socket Mode backfill
   slack/             Slack Web API wrapper, streaming/card renderer, Bolt Socket Mode app
   telegram/          Telegram long-polling entry point, Bot API client, routing, OAR
-                     provider integration, per-topic/cron preferences, and scheduler service
+                     provider integration, per-topic/cron preferences, /cron commands, and
+                     scheduler service
   sched/             Cron scheduler (croner, catch-up) and shell exec runner
   security/          Outbound secret redactor
 scripts/             Utility scripts, Bun smoke test, and Slack/Telegram E2E scripts

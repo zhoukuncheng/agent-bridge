@@ -7,8 +7,7 @@
   "channelCwd": {},
   "agents": {
     "claude": { "kind": "oar", "runtime": "claude" },
-    "omp": { "kind": "acp", "command": "~/.local/bin/omp", "args": ["acp"] },
-    "agy": { "kind": "oar", "runtime": "antigravity" }
+    "codex": { "kind": "oar", "runtime": "codex" }
   },
   "idleMinutes": 30,
   "maxLiveSessions": 4,
