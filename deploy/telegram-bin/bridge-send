@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Send files or images to the current Telegram chat/topic: bridge-send send --file PATH --image PATH.
+
+Prepended to PATH for Telegram agent and exec processes; `cc-connect` is a compatibility alias for imported jobs.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=["send"])
+    parser.add_argument("--file", action="append", default=[])
+    parser.add_argument("--image", action="append", default=[])
+    args = parser.parse_args()
+    if not (args.file or args.image):
+        parser.error("expected --file or --image")
+    token = Path(os.environ["AGENT_BRIDGE_TOKEN_FILE"]).read_text().strip()
+    target = os.environ["BRIDGE_CHAT_ID"]
+    for method, field, paths in [("sendDocument", "document", args.file), ("sendPhoto", "photo", args.image)]:
+        for name in paths:
+            path = Path(name).resolve(strict=True)
+            # curl reads the credential-bearing URL on stdin, outside argv and logs.
+            cmd = ["curl", "--silent", "--max-time", "120", "--config", "-", "--form-string", "chat_id="+target]
+            if os.environ.get("BRIDGE_TOPIC"):
+                cmd.extend(["--form-string", "message_thread_id="+os.environ["BRIDGE_TOPIC"]])
+            escaped = str(path).replace("\\", "\\\\").replace('"', '\\"')
+            cmd.extend(["--form", f'{field}=@"{escaped}"'])
+            result = subprocess.run(cmd, input=f'url = "https://api.telegram.org/bot{token}/{method}"\n', text=True, capture_output=True)
+            if result.returncode:
+                sys.exit(f"Telegram upload failed (curl {result.returncode})")
+            body = json.loads(result.stdout)
+            if not body.get("ok"):
+                sys.exit(f"Telegram upload rejected ({body.get('error_code')})")
+            print(f"sent {path.name} · message {body['result']['message_id']}")
+
+if __name__ == "__main__":
+    main()

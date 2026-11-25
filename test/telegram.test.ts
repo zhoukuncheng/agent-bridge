@@ -40,12 +40,12 @@ test("a migrated silent exec posts its result and keeps the cron run history", a
   });
   try {
     const row = store.addSchedule({ agent: "codex", channel: "123", created_by: "123", cwd: "/tmp", mode: "fresh",
-      exec: true, silent: true, cron: "0 0 * * *", timeout_min: 0, prompt: 'printf "%s %s" "$BRIDGE_CHAT_ID" "$(command -v cc-connect)"' });
+      exec: true, silent: true, cron: "0 0 * * *", timeout_min: 0, prompt: 'printf "%s %s %s" "$BRIDGE_CHAT_ID" "$(command -v bridge-send)" "$(command -v cc-connect)"' });
     await scheduler.start();
     assert.ok(scheduler.nextRun(row.id));
     assert.ok(await scheduler.fire(row.id));
     assert.equal(sent.length, 1);
-    assert.match(sent[0], /^123 .*\/deploy\/telegram-bin\/cc-connect$/);
+    assert.match(sent[0], /^123 \S*\/deploy\/telegram-bin\/bridge-send \S*\/deploy\/telegram-bin\/cc-connect$/);
     assert.equal(store.lastRuns(row.id)[0].outcome, "completed");
   } finally {
     scheduler.stop();
