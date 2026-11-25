@@ -1,17 +1,25 @@
-# ~/.config/systemd/user/agent-bridge.service
+# Slack bridge as a systemd user service.
+#   cp deploy/agent-bridge.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now agent-bridge
+# Edit WorkingDirectory (the clone) and the node path (`command -v node`; Node 24+) first.
+# To keep it running after logout: loginctl enable-linger "$USER"
 [Unit]
 Description=agent-bridge: coding agents in Slack threads
 After=network-online.target
+Wants=network-online.target
 
 [Service]
-WorkingDirectory=%h/code/agent-bridge
-# Tokens: SLACK_BOT_TOKEN=xoxb-..., SLACK_APP_TOKEN=xapp-... (file mode 0600)
+WorkingDirectory=%h/agent-bridge
+# SLACK_BOT_TOKEN=xoxb-... and SLACK_APP_TOKEN=xapp-..., file mode 0600.
 EnvironmentFile=%h/.config/agent-bridge/env
-# OAR needs Node 24+; pin the binary instead of relying on the login shell's nvm default.
-ExecStart=%h/.nvm/versions/node/v24.22.1/bin/node src/main.ts
+# Agents need the CLIs (claude, codex, omp, ...) on PATH; a user service does not read your shell profile.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node src/main.ts
 Restart=on-failure
 RestartSec=5
-# Agents (and what they run) live in this cgroup; cap it so a runaway build cannot take the desktop down.
+UMask=0077
+# Agents and everything they run live in this cgroup. Size the cap to your machine; it keeps a
+# runaway build from exhausting host memory. MemorySwapMax=0 makes the cap a real limit.
 MemoryMax=16G
 MemorySwapMax=0
 KillMode=mixed

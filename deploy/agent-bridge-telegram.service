@@ -1,21 +1,29 @@
+# Telegram bridge as a systemd user service.
+#   cp deploy/agent-bridge-telegram.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now agent-bridge-telegram
+# Edit WorkingDirectory (the clone) first. Swap ExecStart for `/usr/bin/env node src/telegram/main.ts`
+# to run on Node 24+ instead of Bun. To keep it running after logout: loginctl enable-linger "$USER"
+# Stop any other poller (another bridge, cc-connect) that uses the same bot token before starting.
 [Unit]
-Description=Agent Bridge Telegram and Codex
+Description=agent-bridge: coding agents in Telegram
 After=network-online.target
 Wants=network-online.target
-Conflicts=cc-connect.service
 
 [Service]
-Type=simple
-WorkingDirectory=/root/projects/agent-bridge
-Environment=HOME=/root
-Environment=AGENT_BRIDGE_CONFIG=/root/.config/agent-bridge/telegram.json
-Environment=AGENT_BRIDGE_TOKEN_FILE=/root/.config/agent-bridge/telegram.token
-Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/root/.local/share/agent-bridge/runtime/node_modules/.bin/bun --smol src/telegram/main.ts
+WorkingDirectory=%h/agent-bridge
+Environment=AGENT_BRIDGE_CONFIG=%h/.config/agent-bridge/telegram.json
+# Bot API token, file mode 0600.
+Environment=AGENT_BRIDGE_TOKEN_FILE=%h/.config/agent-bridge/telegram.token
+# Agents need codex / agy on PATH; a user service does not read your shell profile.
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env bun --smol src/telegram/main.ts
 Restart=on-failure
 RestartSec=4
 UMask=0077
+MemoryMax=16G
+MemorySwapMax=0
+KillMode=mixed
 TimeoutStopSec=25
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

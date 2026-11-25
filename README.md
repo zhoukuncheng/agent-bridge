@@ -27,27 +27,40 @@ A self-hosted Slack and Telegram bridge for local coding agents.
 
 - **Node.js 24+** (uses native TypeScript execution and `node:sqlite`; no build step required).
 - **Bun** (optional; supported as an alternative runtime for the Telegram entry point).
-- One or more **locally installed and authenticated** coding agent CLIs (for example, `claude`, `codex`, `agy`, or `omp`).
-- **Linux `systemd --user`** (optional; required only if you enable per-agent memory caps via `agentMemoryMax` or run the sample systemd services).
+- One or more **locally installed and authenticated** coding agent CLIs (for example, `claude`, `codex`, `agy`, or `omp`). Each must work when you run it by hand in a terminal as the same OS user.
+- **Slack bridge:** Claude Code (`claude`) is required even if your default agent is something else, because 🔒 read-only sessions (guests and untrusted threads) always run on Claude.
+- **Telegram bridge:** `python3` and `curl` on `PATH` for the file-upload helper (`bridge-send`).
+- **Linux `systemd --user`** (optional; required only if you enable per-agent memory caps via `agentMemoryMax` or run the sample systemd services). On macOS and other systems the bridge runs fine with `npm start`; agents simply run without a per-process memory cap.
 
 ## Installation
 
 ```sh
-git clone https://github.com/zhoukuncheng/agent-bridge.git
-cd agent-bridge
+git clone https://github.com/zhoukuncheng/agent-bridge.git ~/agent-bridge
+cd ~/agent-bridge
 npm ci
 ```
+
+Recent npm versions may print an `install-scripts` warning about `protobufjs`'s postinstall step; the bridge does not need it, so the warning can be ignored.
 
 ## Slack Bridge
 
 ### 1. Create a Slack App
 
-Create a dedicated Slack app with **Socket Mode** enabled:
+Use a dedicated Slack app with **Socket Mode**. The quickest path is the bundled manifest:
 
-- **Bot Token Scopes**: `app_mentions:read`, `chat:write`, `channels:history`, `groups:history`, `im:history`, `im:read`, `im:write`, `mpim:history`
-- **Event Subscriptions**: `app_mention`, `message.channels`, `message.groups`, `message.im`
+1. Open <https://api.slack.com/apps> → **Create New App** → **From a manifest**, pick your workspace, and paste [`deploy/slack-app-manifest.yaml`](deploy/slack-app-manifest.yaml).
+2. **Basic Information → App-Level Tokens → Generate Token and Scopes**, add the `connections:write` scope. This `xapp-...` token is `SLACK_APP_TOKEN`.
+3. **Install App** to the workspace and copy the **Bot User OAuth Token**. This `xoxb-...` token is `SLACK_BOT_TOKEN`.
+4. Invite the bot to any channel where you want to use it (`/invite @agent-bridge`). DMs work without an invite.
+
+If you configure the app by hand instead, it needs:
+
+- **Bot Token Scopes**: `app_mentions:read`, `channels:history`, `chat:write`, `files:read` (attachments), `groups:history`, `im:history`, `im:read`, `im:write`, `mpim:history`, `users:read` (names in thread context)
+- **Event Subscriptions** (bot events): `app_mention`, `message.channels`, `message.groups`, `message.im`, `message.mpim`
 
 > **Important:** Use a dedicated Slack app for `agent-bridge`. Slack distributes Socket Mode events across every active connection for an app, so sharing an app with another bot causes messages to split unpredictably.
+
+**Finding IDs for the config:** your Slack user ID (`ownerUserId`, `allowUsers`) is under your profile → **⋮ → Copy member ID** (starts with `U`). A channel ID (`allowChannels`, `channelCwd`) is at the bottom of the channel's **About** tab, or in its link (starts with `C`, or `G` for older private channels).
 
 ### 2. Configure and Run
 
@@ -69,11 +82,17 @@ set -a; source ~/.config/agent-bridge/env; set +a
 npm start
 ```
 
-Or run as a Linux `systemd --user` service (review and adjust `WorkingDirectory`, `ExecStart`, and `EnvironmentFile` in [`deploy/agent-bridge.service`](deploy/agent-bridge.service) first):
+The bridge logs `agent-bridge up as @<bot> ...` once it is connected. DM the bot `!help` to check the round trip.
+
+Or run as a Linux `systemd --user` service. Open [`deploy/agent-bridge.service`](deploy/agent-bridge.service) first and adjust `WorkingDirectory` (your clone), `PATH` (where `node` and your agent CLIs live; a user service does not read your shell profile, so nvm/fnm installs need their bin directory added), and `MemoryMax`:
 
 ```sh
+mkdir -p ~/.config/systemd/user
 cp deploy/agent-bridge.service ~/.config/systemd/user/
+systemctl --user daemon-reload
 systemctl --user enable --now agent-bridge
+journalctl --user -u agent-bridge -f      # logs
+loginctl enable-linger "$USER"            # optional: keep running after logout
 ```
 
 ### 3. Slack Usage & Commands
@@ -151,7 +170,9 @@ node src/telegram/main.ts
 bun --smol src/telegram/main.ts
 ```
 
-A sample Linux systemd unit is provided in [`deploy/agent-bridge-telegram.service`](deploy/agent-bridge-telegram.service) (update paths and service settings for your host before enabling). Make sure no other poller is consuming updates for the same bot token before starting the service.
+A sample `systemd --user` unit is provided in [`deploy/agent-bridge-telegram.service`](deploy/agent-bridge-telegram.service). Adjust `WorkingDirectory`, `PATH`, and the config/token paths, then install it the same way as the Slack unit (`systemctl --user daemon-reload && systemctl --user enable --now agent-bridge-telegram`). Make sure no other poller is consuming updates for the same bot token before starting the service.
+
+To get the numeric `ownerUserId`, message [@userinfobot](https://t.me/userinfobot) or read `message.from.id` from the bot's `getUpdates` response.
 
 ### 2. Telegram Usage & Commands
 
@@ -173,7 +194,7 @@ Works in private chats with the owner, as well as groups and forum topics (where
 
 - Per-topic provider/model/reasoning selections and shared `/cron` settings are persisted in SQLite across restarts.
 - Replies use `sendRichMessage` (Markdown or HTML) with automatic chunked plain-text fallback (`sendMessage`).
-- Agent and shell processes run with [`deploy/telegram-bin`](deploy/telegram-bin) prepended to `PATH`, providing a lightweight helper for uploading files and images directly to the active chat or topic.
+- Agent and shell processes run with [`deploy/telegram-bin`](deploy/telegram-bin) prepended to `PATH`. It provides `bridge-send send --file PATH --image PATH`, which uploads files and images to the active chat or topic (requires `python3` and `curl`). `cc-connect` is kept as an alias so jobs imported from cc-connect keep working.
 
 ## Configuration Reference
 
@@ -271,6 +292,16 @@ Live E2E scripts exercise real APIs and real local agent CLIs:
   bun --smol scripts/telegram-e2e.ts
   ```
 
+## Migrating from cc-connect
+
+[`scripts/migrate-cc-connect.ts`](scripts/migrate-cc-connect.ts) imports cc-connect cron jobs into the bridge's schedule table. Stop the bridge first (schedules load at startup), preview with `--dry-run`, then run it for real:
+
+```sh
+node scripts/migrate-cc-connect.ts --dry-run [--platform slack|telegram] [--jobs ~/.cc-connect/crons/jobs.json] [--cwd ~/code] [--agent NAME]
+```
+
+Jobs keep their cron expression, target, exec/silent flags, timeout, and enabled state (disabled jobs come over paused). Re-running skips jobs already imported. Use `--platform telegram` with `AGENT_BRIDGE_CONFIG` pointing at the Telegram config. Stop cc-connect before starting the bridge on the same bot token or Slack app.
+
 ## Project Structure
 
 ```text
@@ -289,7 +320,7 @@ src/
   sched/             Cron scheduler (croner, catch-up) and shell exec runner
   security/          Outbound secret redactor
 scripts/             Utility scripts, Bun smoke test, and Slack/Telegram E2E scripts
-deploy/              Example config, systemd service templates, and Telegram attachment helper
+deploy/              Example config, Slack app manifest, systemd user units, and Telegram upload helper
 test/                Node test suite and ACP test fixtures
 ```
 
@@ -298,3 +329,7 @@ test/                Node test suite and ACP test fixtures
 - **[OAR (`@botiverse/oar`)](https://github.com/botiverse/oar)** — Open Agent Runtime, providing a unified programmatic interface across coding agent harnesses (Claude Code, Codex, Antigravity, Pi, and more).
 - **[cc-connect](https://github.com/chenhg5/cc-connect)** — Open-source bridge connecting local AI coding agents to Slack, Telegram, and other messaging platforms.
 - **[Agent Client Protocol (ACP)](https://agentclientprotocol.com)** — Protocol implemented by the built-in ACP client for ACP-compatible agents such as `omp`.
+
+## License
+
+[MIT](LICENSE)

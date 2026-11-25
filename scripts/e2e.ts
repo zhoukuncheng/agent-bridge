@@ -1,12 +1,12 @@
 // End-to-end check against real Slack and real agents.
 //
-// Inbound events are injected into the router instead of arriving over Socket Mode:
-// the bot app is shared with a running cc-connect, and Slack would split events between
+// Inbound events are injected into the router instead of arriving over Socket Mode, so the
+// test can run next to a live daemon on the same app without Slack splitting events between
 // the two connections. Everything else is real: the bot posts each "user" message as a
 // labelled seed, the bridge drives real claude/omp sessions, and the checks read the
 // thread back through conversations.replies.
 //
-// Usage: scripts/with-slack-env.sh node scripts/e2e.ts --channel CHANNEL_ID --owner USER_ID [--only name,name]
+// Usage: SLACK_BOT_TOKEN=xoxb-... node scripts/e2e.ts --channel CHANNEL_ID --owner USER_ID [--only name,name]
 import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +37,7 @@ const OWNER = values.owner.trim();
 const only = values.only ? new Set(values.only.split(",")) : undefined;
 
 const token = process.env.SLACK_BOT_TOKEN;
-if (!token) throw new Error("SLACK_BOT_TOKEN is not set (run through scripts/with-slack-env.sh)");
+if (!token) throw new Error("SLACK_BOT_TOKEN is not set");
 const client = new WebClient(token);
 const api = new WebSlackApi(client);
 const auth = await client.auth.test();
